@@ -1,3 +1,51 @@
+# Node / Next.js (UI)
+ui/node_modules/
+ui/.next/
+ui/.turbo/
+ui/.vercel/
+ui/out/
+ui/build/
+ui/dist/
+ui/coverage/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS & editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.python-version
+.venv/
+venv/
+.env
+.env.*
+
+# Test & cache
+.pytest_cache/
+.mypy_cache/
+.cache/
+
+# IFC / artifacts
+exports/
+*.ifc
+*.bim
+
+# Misc
+*.swp
+*.swo
+
 __pycache__/
 .pytest_cache/
 .ruff_cache/
