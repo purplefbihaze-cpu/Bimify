@@ -1,0 +1,40 @@
+roboflow:
+  project: doxle-fmcyk/floor-plan-ts7cp
+  version: 31
+  confidence: 0.01
+  overlap: 0.3
+  per_class_thresholds:
+    internal_wall: 0.01
+    external_wall: 0.01
+    door: 0.01
+    window: 0.01
+  api_url: https://serverless.roboflow.com
+  api_key_env: ROBOFLOW_API_KEY
+
+preprocess:
+  dpi: 400
+
+## xBIM preprocess removed
+
+ifc:
+  schema: IFC4
+  unit: mm
+  storey_zero_name: EG
+  wall_thickness_standards_mm:
+    - 115
+    - 240
+    - 300
+    - 400
+    - 500
+
+storage:
+  bucket: bimify
+  region: eu-central-1
+
+database:
+  url_env: DATABASE_URL
+
+queue:
+  broker_url_env: CELERY_BROKER_URL
+  result_backend_env: CELERY_RESULT_BACKEND
+

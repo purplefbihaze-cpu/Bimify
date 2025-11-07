@@ -1,0 +1,2 @@
+C:\Users\ddrob\Documents\Bimify\tools\XbimPreprocess\publish\win-x64\XbimPreprocess.pdb
+C:\Users\ddrob\Documents\Bimify\tools\XbimPreprocess\publish\win-x64\XbimPreprocess.exe

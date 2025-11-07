@@ -1,0 +1,1 @@
+{"id": "5eb805b9-7c64-412d-95ef-9165f9b4c5b5", "status": "running", "progress": 1, "input_files": ["data\\uploads\\5eb805b9-7c64-412d-95ef-9165f9b4c5b5\\upload\\4og.png"], "meta": {"rf_confidence": 0.01, "rf_overlap": 0.3, "per_class_thresholds": {"internal_wall": 0.01, "external_wall": 0.01, "door": 0.01, "window": 0.01, "stair": 0.01}}}

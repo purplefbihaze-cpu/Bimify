@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <OutputType>Exe</OutputType>
+    <LangVersion>latest</LangVersion>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xBim.Essentials" Version="6.0.521" />
+    <PackageReference Include="Xbim.Geometry" Version="5.1.820" />
+    <PackageReference Include="Xbim.ModelGeometry.Scene" Version="5.1.820" />
+    <PackageReference Include="System.Configuration.ConfigurationManager" Version="7.0.0" />
+  </ItemGroup>
+
+  <Target Name="CopyXbimGeometryEngine" AfterTargets="Publish">
+    <ItemGroup>
+      <GeometryEngineFiles Include="$(NuGetPackageRoot)xbim.geometry.engine.interop\5.1.820\build\net472\Xbim.Geometry.Engine32.dll" />
+      <GeometryEngineFiles Include="$(NuGetPackageRoot)xbim.geometry.engine.interop\5.1.820\build\net472\Xbim.Geometry.Engine64.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(GeometryEngineFiles)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(GeometryEngineFiles)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>
+

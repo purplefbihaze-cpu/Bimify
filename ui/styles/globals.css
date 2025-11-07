@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0b0f14;
+  --bg2: #0f141b;
+  --fg: #e5ecf5;
+  --accent: #1f6f4c;
+  --accent-soft: #4a8f6c;
+  --accent-strong: #d4b76f;
+  --dynamic-accent: var(--accent);
+  --glass: rgba(15, 19, 27, 0.55);
+  --glass-strong: rgba(18, 24, 34, 0.72);
+  --gradient-a: rgba(31, 111, 76, 0.2);
+  --gradient-b: rgba(212, 183, 111, 0.24);
+  --matrix-color: #1f6f4c;
+  --matrix-opacity: 0.35;
+}
+
+[data-high-contrast="true"] {
+  --accent: #2da169;
+  --accent-soft: #57c792;
+  --accent-strong: #f1d48a;
+  --dynamic-accent: var(--accent);
+}
+
+.glass {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.02) 100%), var(--glass);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 10px 30px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(12px) saturate(140%);
+}
+
+.focus-ring {
+  @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2;
+  --tw-ring-color: var(--accent);
+  --tw-ring-offset-color: var(--bg2);
+}
+
+html,
+body,
+#__next {
+  height: 100%;
+}
+
+body {
+  background: radial-gradient(1200px 600px at 20% -10%, var(--gradient-a), transparent 60%),
+    radial-gradient(1200px 600px at 80% 110%, var(--gradient-b), transparent 60%),
+    linear-gradient(180deg, var(--bg), var(--bg2));
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+  background-size: cover;
+  color: var(--fg);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  text-underline-offset: 6px;
+  transition: color 0.2s ease;
+}
+
+a:hover {
+  color: var(--accent-strong);
+  text-decoration-color: var(--accent-strong);
+}
+
+.bloom {
+  filter: drop-shadow(0 0 20px rgba(31, 111, 76, 0.35));
+}
+
+

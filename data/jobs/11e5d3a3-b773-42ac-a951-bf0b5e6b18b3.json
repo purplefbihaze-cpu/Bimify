@@ -1,0 +1,1 @@
+{"id": "11e5d3a3-b773-42ac-a951-bf0b5e6b18b3", "status": "running", "progress": 1, "input_files": ["data\\uploads\\11e5d3a3-b773-42ac-a951-bf0b5e6b18b3\\upload\\EG11.png"], "meta": {"rf_confidence": 0.01, "rf_overlap": 0.3, "per_class_thresholds": {"internal_wall": 0.01, "external_wall": 0.01, "door": 0.01, "window": 0.01, "stair": 0.01}}}

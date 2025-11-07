@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0b1018"/>
+      <stop offset="100%" stop-color="#0a0f17"/>
+    </linearGradient>
+    <linearGradient id="matrixLine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1eff00" stop-opacity="0.0"/>
+      <stop offset="20%" stop-color="#1eff00" stop-opacity="0.75"/>
+      <stop offset="70%" stop-color="#12b600" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#0a7000" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Neutral background -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+
+  <!-- Matrix rain -->
+  <g opacity="0.9">
+    <!-- repeated thin lines with gradient -->
+    <g>
+      <rect x="100" y="80" width="3" height="220" fill="url(#matrixLine)"/>
+      <rect x="140" y="190" width="2" height="280" fill="url(#matrixLine)"/>
+      <rect x="180" y="60" width="2" height="240" fill="url(#matrixLine)"/>
+      <rect x="220" y="130" width="3" height="310" fill="url(#matrixLine)"/>
+      <rect x="260" y="50" width="2" height="220" fill="url(#matrixLine)"/>
+      <rect x="300" y="170" width="2" height="270" fill="url(#matrixLine)"/>
+      <rect x="340" y="100" width="3" height="260" fill="url(#matrixLine)"/>
+      <rect x="380" y="140" width="2" height="300" fill="url(#matrixLine)"/>
+      <rect x="420" y="60" width="2" height="260" fill="url(#matrixLine)"/>
+      <rect x="460" y="120" width="3" height="320" fill="url(#matrixLine)"/>
+      <rect x="500" y="80" width="2" height="260" fill="url(#matrixLine)"/>
+      <rect x="540" y="190" width="2" height="280" fill="url(#matrixLine)"/>
+      <rect x="580" y="60" width="3" height="240" fill="url(#matrixLine)"/>
+      <rect x="620" y="130" width="2" height="310" fill="url(#matrixLine)"/>
+      <rect x="660" y="50" width="2" height="220" fill="url(#matrixLine)"/>
+      <rect x="700" y="170" width="3" height="270" fill="url(#matrixLine)"/>
+      <rect x="740" y="100" width="2" height="260" fill="url(#matrixLine)"/>
+      <rect x="780" y="140" width="2" height="300" fill="url(#matrixLine)"/>
+      <rect x="820" y="60" width="3" height="260" fill="url(#matrixLine)"/>
+      <rect x="860" y="120" width="2" height="320" fill="url(#matrixLine)"/>
+    </g>
+  </g>
+
+  <!-- Blueprint to 3D cube symbol -->
+  <g transform="translate(512,560)">
+    <!-- Blueprint square -->
+    <rect x="-220" y="-220" width="300" height="300" rx="8" ry="8" fill="none" stroke="#1eff00" stroke-width="6" opacity="0.85" filter="url(#glow)"/>
+    <g stroke="#1eff00" stroke-opacity="0.4">
+      <line x1="-220" y1="-70" x2="80" y2="-70" stroke-width="2"/>
+      <line x1="-70" y1="-220" x2="-70" y2="80" stroke-width="2"/>
+      <circle cx="-70" cy="-70" r="6" fill="#1eff00"/>
+    </g>
+
+    <!-- 3D cube (isometric) -->
+    <g transform="translate(60, -40) scale(1.2)">
+      <polygon points="0,-120 100,-60 0,0 -100,-60" fill="#0c2f0c" stroke="#1eff00" stroke-width="5" opacity="0.9" filter="url(#glow)"/>
+      <polygon points="0,0 100,-60 100,60 0,120" fill="#0a280a" stroke="#1eff00" stroke-width="5" opacity="0.9" filter="url(#glow)"/>
+      <polygon points="0,0 -100,-60 -100,60 0,120" fill="#092209" stroke="#1eff00" stroke-width="5" opacity="0.9" filter="url(#glow)"/>
+      <!-- cube edges highlights -->
+      <g stroke="#1eff00" stroke-opacity="0.6" stroke-width="3">
+        <line x1="0" y1="-120" x2="0" y2="120"/>
+        <line x1="-100" y1="-60" x2="100" y2="-60"/>
+        <line x1="-100" y1="60" x2="100" y2="60"/>
+      </g>
+    </g>
+  </g>
+</svg>
+

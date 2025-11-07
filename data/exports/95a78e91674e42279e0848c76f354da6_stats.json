@@ -1,0 +1,16 @@
+{
+  "statsVersion": "1.0",
+  "toolVersion": "1.0.0.0",
+  "productsVisited": 93,
+  "productsUpdated": 93,
+  "tessellationsCreated": 93,
+  "triangles": 0,
+  "vertices": 0,
+  "tessellationSkipped": false,
+  "wexbimRequested": true,
+  "wexbimWritten": true,
+  "timestamp": "2025-11-06T01:01:29.5826567\u002B00:00",
+  "inputBytes": 188361,
+  "outputBytes": 188375,
+  "commandLine": "C:\\Users\\ddrob\\Documents\\Bimify\\tools\\XbimPreprocess\\publish\\win-x64\\XbimPreprocess.dll --in data\\exports\\95a78e91674e42279e0848c76f354da6.ifc --out data\\exports\\95a78e91674e42279e0848c76f354da6_preproc.ifc --overwrite --stats data\\exports\\95a78e91674e42279e0848c76f354da6_stats.json --wexbim data\\exports\\95a78e91674e42279e0848c76f354da6.wexbim"
+}

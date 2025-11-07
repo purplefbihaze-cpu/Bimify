@@ -1,0 +1,1302 @@
+[
+  {
+    "index": 1,
+    "type": "DOOR",
+    "width_mm": 1347.9223016368574,
+    "depth_mm": 144.86688000000004,
+    "target_height_mm": 2100.0,
+    "base_height_mm": 0.0,
+    "wall_index": 2,
+    "axis_index": null,
+    "outside_area_mm2": 195269.2983205521,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "0Ip3oj28XDLPBryXejSDFg",
+    "opening_guid": "3wmP4fviDD38DAgsGC8iOi",
+    "polygon_coords": [
+      [
+        9051.213308003187,
+        9663.591289410808
+      ],
+      [
+        10399.135609640043,
+        9663.591289410808
+      ],
+      [
+        10399.135609640043,
+        9808.45816941081
+      ],
+      [
+        9051.213308003187,
+        9808.45816941081
+      ],
+      [
+        9051.213308003187,
+        9663.591289410808
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 1347.9223016368574,
+      "perp_span_mm": 220.8,
+      "inside_ratio": 0.29300768577608577,
+      "fallback": true
+    }
+  },
+  {
+    "index": 2,
+    "type": "DOOR",
+    "width_mm": 1048.384012384224,
+    "depth_mm": 241.4448,
+    "target_height_mm": 2100.0,
+    "base_height_mm": 0.0,
+    "wall_index": 5,
+    "axis_index": null,
+    "outside_area_mm2": 253126.8681933088,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "2btGBMBrv4whUpRVbxDSo6",
+    "opening_guid": "3wpnmtKIbB8vffglRLzMnS",
+    "polygon_coords": [
+      [
+        19820.367234406556,
+        9874.773773758592
+      ],
+      [
+        19079.04778996211,
+        9133.454329314147
+      ],
+      [
+        19249.775045324342,
+        8962.727073951915
+      ],
+      [
+        19991.094489768788,
+        9704.04651839636
+      ],
+      [
+        19820.367234406556,
+        9874.773773758592
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.014558028936790762,
+      "span_mm": 1048.384012384224,
+      "perp_span_mm": 368.0,
+      "inside_ratio": 0.6659672072062639,
+      "outside_ratio": 0.33403279279373604,
+      "outside_area_mm2": 128871.62736433785,
+      "clearance_ratio": 0.0
+    }
+  },
+  {
+    "index": 3,
+    "type": "DOOR",
+    "width_mm": 953.125,
+    "depth_mm": 144.86688000000004,
+    "target_height_mm": 2100.0,
+    "base_height_mm": 0.0,
+    "wall_index": 0,
+    "axis_index": null,
+    "outside_area_mm2": 138076.24500000133,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "2PqJS44RLE0QMRTJEkuciU",
+    "opening_guid": "23XygAEhfAZxvXu3N$oVHh",
+    "polygon_coords": [
+      [
+        12535.131018821614,
+        13408.334181043838
+      ],
+      [
+        12535.131018821614,
+        12455.209181043838
+      ],
+      [
+        12679.997898821615,
+        12455.209181043838
+      ],
+      [
+        12679.997898821615,
+        13408.334181043838
+      ],
+      [
+        12535.131018821614,
+        13408.334181043838
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 953.125,
+      "perp_span_mm": 220.8,
+      "inside_ratio": 0.8790359860947972,
+      "outside_ratio": 0.1209640139052028,
+      "outside_area_mm2": 25456.876726349845,
+      "clearance_ratio": 0.0
+    }
+  },
+  {
+    "index": 4,
+    "type": "DOOR",
+    "width_mm": 1342.051511974049,
+    "depth_mm": 241.4448,
+    "target_height_mm": 2100.0,
+    "base_height_mm": 0.0,
+    "wall_index": 4,
+    "axis_index": null,
+    "outside_area_mm2": 324031.35889826965,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "2Lm5Nky4X3UxNH6Lvfv5cp",
+    "opening_guid": "2o_SrZaD5AdBhVnWge$Kx7",
+    "polygon_coords": [
+      [
+        10363.850704024708,
+        12088.800891007553
+      ],
+      [
+        9322.265736704447,
+        11242.513105059841
+      ],
+      [
+        9474.519046951855,
+        11055.124415524571
+      ],
+      [
+        10516.104014272116,
+        11901.412201472283
+      ],
+      [
+        10363.850704024708,
+        12088.800891007553
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.03759108497128023,
+      "span_mm": 1342.051511974049,
+      "perp_span_mm": 368.0,
+      "inside_ratio": 0.653090194127126,
+      "outside_ratio": 0.34690980587287396,
+      "outside_area_mm2": 171330.06525243603,
+      "clearance_ratio": 0.0
+    }
+  },
+  {
+    "index": 5,
+    "type": "DOOR",
+    "width_mm": 1440.6927570574383,
+    "depth_mm": 181.08360000000002,
+    "target_height_mm": 2100.0,
+    "base_height_mm": 0.0,
+    "wall_index": 16,
+    "axis_index": null,
+    "outside_area_mm2": 101523.07792436353,
+    "inside_area_mm2": 159362.7530175199,
+    "inside_ratio": 0.610852465395181,
+    "wall_guid": "1lp_JlMSPC_u0yBLKDuqs8",
+    "opening_guid": "2zGJrVsjb5Wfw0dt6WCO1u",
+    "polygon_coords": [
+      [
+        17977.355881577656,
+        12108.989054791986
+      ],
+      [
+        17977.355881577656,
+        13549.681811849423
+      ],
+      [
+        17796.272281577658,
+        13549.681811849423
+      ],
+      [
+        17796.272281577658,
+        12108.989054791986
+      ],
+      [
+        17977.355881577656,
+        12108.989054791986
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 1440.6927570574383,
+      "perp_span_mm": 276.0,
+      "inside_ratio": 0.31373058481703914,
+      "fallback": true
+    }
+  },
+  {
+    "index": 6,
+    "type": "DOOR",
+    "width_mm": 915.0880457888757,
+    "depth_mm": 144.86688000000004,
+    "target_height_mm": 2100.0,
+    "base_height_mm": 0.0,
+    "wall_index": 0,
+    "axis_index": null,
+    "outside_area_mm2": 132565.95011873034,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "1EaBCnTbD8TfGAmtaqfEKR",
+    "opening_guid": "3G2j3Sj6L1zhhFgk_4eUPn",
+    "polygon_coords": [
+      [
+        12421.596358368077,
+        11609.488531289659
+      ],
+      [
+        11516.63252381225,
+        11473.743956106282
+      ],
+      [
+        11538.12214240604,
+        11330.479832147674
+      ],
+      [
+        12443.085976961867,
+        11466.22440733105
+      ],
+      [
+        12421.596358368077,
+        11609.488531289659
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.03505535010109596,
+      "span_mm": 915.0880457888757,
+      "perp_span_mm": 220.8,
+      "inside_ratio": 0.642452392166682,
+      "outside_ratio": 0.357547607833318,
+      "outside_area_mm2": 72243.00921369162,
+      "clearance_ratio": 0.0
+    }
+  },
+  {
+    "index": 7,
+    "type": "DOOR",
+    "width_mm": 1344.8086814615904,
+    "depth_mm": 144.86688000000004,
+    "target_height_mm": 2100.0,
+    "base_height_mm": 0.0,
+    "wall_index": 2,
+    "axis_index": null,
+    "outside_area_mm2": 194818.23788025544,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "1FQyegp7fC6AjzpN2dodaT",
+    "opening_guid": "3Ejh1rTmvCCBjlPTjE0DAD",
+    "polygon_coords": [
+      [
+        8796.735800740747,
+        9297.949760245803
+      ],
+      [
+        8532.997119632217,
+        10616.643165788424
+      ],
+      [
+        8390.94345655658,
+        10588.232433173296
+      ],
+      [
+        8654.682137665111,
+        9269.539027630675
+      ],
+      [
+        8796.735800740747,
+        9297.949760245803
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.08541022071325081,
+      "span_mm": 1344.8086814615904,
+      "perp_span_mm": 220.8,
+      "inside_ratio": 0.4609510718251236,
+      "outside_ratio": 0.5390489281748764,
+      "outside_area_mm2": 160061.82337794546,
+      "clearance_ratio": 0.0
+    }
+  },
+  {
+    "index": 8,
+    "type": "DOOR",
+    "width_mm": 1059.0269300672735,
+    "depth_mm": 144.86688000000004,
+    "target_height_mm": 2100.0,
+    "base_height_mm": 0.0,
+    "wall_index": 17,
+    "axis_index": null,
+    "outside_area_mm2": 153417.92719482558,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "12M4YKhhz45A7vAca64$ck",
+    "opening_guid": "1ZyQiEaA92DhhlqM3wF0id",
+    "polygon_coords": [
+      [
+        14298.090701633031,
+        12644.06046326606
+      ],
+      [
+        15357.117631700305,
+        12644.06046326606
+      ],
+      [
+        15357.117631700305,
+        12788.927343266061
+      ],
+      [
+        14298.090701633031,
+        12788.927343266061
+      ],
+      [
+        14298.090701633031,
+        12644.06046326606
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 1059.0269300672735,
+      "perp_span_mm": 220.8,
+      "inside_ratio": 0.2062562234853818,
+      "fallback": true
+    }
+  },
+  {
+    "index": 9,
+    "type": "DOOR",
+    "width_mm": 1059.0277777777774,
+    "depth_mm": 144.86688000000004,
+    "target_height_mm": 2100.0,
+    "base_height_mm": 0.0,
+    "wall_index": 7,
+    "axis_index": null,
+    "outside_area_mm2": 153418.0500000014,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "3GHula0fv5F9GYTfTnTINV",
+    "opening_guid": "3D337R_Gn4ygVB75A4Cuf2",
+    "polygon_coords": [
+      [
+        19946.60172764323,
+        11990.799458821615
+      ],
+      [
+        19946.60172764323,
+        10931.771681043838
+      ],
+      [
+        20091.46860764323,
+        10931.771681043838
+      ],
+      [
+        20091.46860764323,
+        11990.799458821615
+      ],
+      [
+        19946.60172764323,
+        11990.799458821615
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.02602687972785502,
+      "span_mm": 1059.0277777777774,
+      "perp_span_mm": 220.8,
+      "inside_ratio": 0.5824312911606763,
+      "outside_ratio": 0.41756870883932373,
+      "outside_area_mm2": 97641.48308359645,
+      "clearance_ratio": 0.0
+    }
+  },
+  {
+    "index": 10,
+    "type": "DOOR",
+    "width_mm": 926.6493055555566,
+    "depth_mm": 181.08360000000002,
+    "target_height_mm": 2100.0,
+    "base_height_mm": 0.0,
+    "wall_index": 10,
+    "axis_index": null,
+    "outside_area_mm2": 167800.9921874981,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "1uYDvicy1DD8c9wjvcc$w9",
+    "opening_guid": "2EZs2RHij5l9VfkQ9et5kP",
+    "polygon_coords": [
+      [
+        19955.502950976563,
+        14024.436611599394
+      ],
+      [
+        19955.502950976563,
+        13097.78730604384
+      ],
+      [
+        20136.58655097656,
+        13097.78730604384
+      ],
+      [
+        20136.58655097656,
+        14024.436611599394
+      ],
+      [
+        19955.502950976563,
+        14024.436611599394
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 926.6493055555566,
+      "perp_span_mm": 276.0,
+      "inside_ratio": 0.7631955205646341,
+      "outside_ratio": 0.23680447943536584,
+      "outside_area_mm2": 60563.97897225848,
+      "clearance_ratio": 0.0
+    }
+  },
+  {
+    "index": 11,
+    "type": "WINDOW",
+    "width_mm": 1215.633787200632,
+    "depth_mm": 144.86688000000004,
+    "target_height_mm": 1000.0,
+    "base_height_mm": 1000.0,
+    "wall_index": 13,
+    "axis_index": null,
+    "outside_area_mm2": 176105.07397433918,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "3Vr$2n01XB6vcRgRvOOjAD",
+    "opening_guid": "0f_q7OQsr1jQu$a8XUln8R",
+    "polygon_coords": [
+      [
+        9238.01728744352,
+        5205.691983855252
+      ],
+      [
+        10453.651074644153,
+        5205.691983855252
+      ],
+      [
+        10453.651074644153,
+        5350.558863855252
+      ],
+      [
+        9238.01728744352,
+        5350.558863855252
+      ],
+      [
+        9238.01728744352,
+        5205.691983855252
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 1215.633787200632,
+      "perp_span_mm": 220.8,
+      "inside_ratio": 0.37767304156917886,
+      "fallback": true
+    }
+  },
+  {
+    "index": 12,
+    "type": "WINDOW",
+    "width_mm": 1123.2685846973798,
+    "depth_mm": 69.41538000000001,
+    "target_height_mm": 1000.0,
+    "base_height_mm": 1000.0,
+    "wall_index": 11,
+    "axis_index": null,
+    "outside_area_mm2": 77972.11564883123,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "03X7UeldrAd8huKuhO7YJi",
+    "opening_guid": "1ZDxYMher1CPFUrnxK9wwS",
+    "polygon_coords": [
+      [
+        12135.328360917372,
+        5215.639956077474
+      ],
+      [
+        13258.596945614752,
+        5215.639956077474
+      ],
+      [
+        13258.596945614752,
+        5285.055336077475
+      ],
+      [
+        12135.328360917372,
+        5285.055336077475
+      ],
+      [
+        12135.328360917372,
+        5215.639956077474
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 1123.2685846973798,
+      "perp_span_mm": 105.80000000000001,
+      "inside_ratio": 0.33177722814303456,
+      "fallback": true
+    }
+  },
+  {
+    "index": 13,
+    "type": "DOOR",
+    "width_mm": 1729.9473165351756,
+    "depth_mm": 144.86688000000004,
+    "target_height_mm": 2100.0,
+    "base_height_mm": 0.0,
+    "wall_index": 1,
+    "axis_index": null,
+    "outside_area_mm2": 250612.07031082545,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "3hbkU9D1fBi9MczhLhdJKd",
+    "opening_guid": "1uiU8ziX531Ahnf97cW8Li",
+    "polygon_coords": [
+      [
+        16137.885676599395,
+        9052.908710032109
+      ],
+      [
+        16137.885676599395,
+        10782.856026567282
+      ],
+      [
+        15993.018796599394,
+        10782.856026567282
+      ],
+      [
+        15993.018796599394,
+        9052.908710032109
+      ],
+      [
+        16137.885676599395,
+        9052.908710032109
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 1729.9473165351756,
+      "perp_span_mm": 220.8,
+      "inside_ratio": 0.3208993370063008,
+      "fallback": true
+    }
+  },
+  {
+    "index": 14,
+    "type": "WINDOW",
+    "width_mm": 2096.7680247684416,
+    "depth_mm": 144.86688000000004,
+    "target_height_mm": 1000.0,
+    "base_height_mm": 1000.0,
+    "wall_index": 15,
+    "axis_index": null,
+    "outside_area_mm2": 303752.2418319696,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "0_NJoQIlPF8gFKGb0wY6Km",
+    "opening_guid": "0nkfl3CqH3MBfVPHdlbjMt",
+    "polygon_coords": [
+      [
+        19909.864210814565,
+        15835.033533198784
+      ],
+      [
+        22006.632235583005,
+        15835.033533198784
+      ],
+      [
+        22006.632235583005,
+        15979.900413198786
+      ],
+      [
+        19909.864210814565,
+        15979.900413198786
+      ],
+      [
+        19909.864210814565,
+        15835.033533198784
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 2096.7680247684416,
+      "perp_span_mm": 220.8,
+      "inside_ratio": 0.1927472254367176,
+      "fallback": true
+    }
+  },
+  {
+    "index": 15,
+    "type": "WINDOW",
+    "width_mm": 1160.7108708539588,
+    "depth_mm": 69.41538000000001,
+    "target_height_mm": 1000.0,
+    "base_height_mm": 1000.0,
+    "wall_index": 14,
+    "axis_index": null,
+    "outside_area_mm2": 80571.18617045687,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "0S7HwE$oH4Rvg_LGccmBiS",
+    "opening_guid": "16ePoNBQf96edTyCbMK5IN",
+    "polygon_coords": [
+      [
+        11421.294717839079,
+        15911.821783198786
+      ],
+      [
+        12582.005588693039,
+        15911.821783198786
+      ],
+      [
+        12582.005588693039,
+        15981.237163198784
+      ],
+      [
+        11421.294717839079,
+        15981.237163198784
+      ],
+      [
+        11421.294717839079,
+        15911.821783198786
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 1160.7108708539588,
+      "perp_span_mm": 105.80000000000001,
+      "inside_ratio": 0.32052974681978474,
+      "fallback": true
+    }
+  },
+  {
+    "index": 16,
+    "type": "WINDOW",
+    "width_mm": 1141.989727775676,
+    "depth_mm": 69.41538000000001,
+    "target_height_mm": 1000.0,
+    "base_height_mm": 1000.0,
+    "wall_index": 12,
+    "axis_index": null,
+    "outside_area_mm2": 79271.65090964548,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "3qz7EpX2zF_QhvT9YT2WZ3",
+    "opening_guid": "0Hjl_EE2n2ZP0yMQpw$V0B",
+    "polygon_coords": [
+      [
+        16355.135303755396,
+        5328.05315052192
+      ],
+      [
+        17497.12503153107,
+        5328.05315052192
+      ],
+      [
+        17497.12503153107,
+        5397.46853052192
+      ],
+      [
+        16355.135303755396,
+        5397.46853052192
+      ],
+      [
+        16355.135303755396,
+        5328.05315052192
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 1141.989727775676,
+      "perp_span_mm": 105.80000000000001,
+      "inside_ratio": 0.32505208880982006,
+      "fallback": true
+    }
+  },
+  {
+    "index": 17,
+    "type": "WINDOW",
+    "width_mm": 694.1190257326184,
+    "depth_mm": 144.86688000000004,
+    "target_height_mm": 1000.0,
+    "base_height_mm": 1000.0,
+    "wall_index": 8,
+    "axis_index": null,
+    "outside_area_mm2": 100554.85760652466,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "1vbj109t94WARKbGNSSHse",
+    "opening_guid": "0ciFFOKBf5DA3MpvbPCD8N",
+    "polygon_coords": [
+      [
+        19631.082443640298,
+        4901.897660634122
+      ],
+      [
+        19874.803904827524,
+        5551.821557133369
+      ],
+      [
+        19739.16081822013,
+        5602.687714611144
+      ],
+      [
+        19495.439357032905,
+        4952.763818111896
+      ],
+      [
+        19631.082443640298,
+        4901.897660634122
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.000745500579471072,
+      "span_mm": 694.1190257326184,
+      "perp_span_mm": 220.8,
+      "inside_ratio": 0.4780255170838885,
+      "outside_ratio": 0.5219744829161115,
+      "outside_area_mm2": 79998.58223421662,
+      "clearance_ratio": 0.0
+    }
+  },
+  {
+    "index": 18,
+    "type": "DOOR",
+    "width_mm": 847.2222222222226,
+    "depth_mm": 144.86688000000004,
+    "target_height_mm": 2100.0,
+    "base_height_mm": 0.0,
+    "wall_index": 7,
+    "axis_index": null,
+    "outside_area_mm2": 122734.44000000124,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "3GHula0fv5F9GYTfTnTINV",
+    "opening_guid": "2lpKqJekT39PDGxhURyZKP",
+    "polygon_coords": [
+      [
+        19946.60172764323,
+        11884.896681043838
+      ],
+      [
+        19946.60172764323,
+        11037.674458821615
+      ],
+      [
+        20091.46860764323,
+        11037.674458821615
+      ],
+      [
+        20091.46860764323,
+        11884.896681043838
+      ],
+      [
+        19946.60172764323,
+        11884.896681043838
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.006278454387459912,
+      "span_mm": 847.2222222222226,
+      "perp_span_mm": 220.8,
+      "inside_ratio": 0.7280391139508448,
+      "outside_ratio": 0.2719608860491552,
+      "outside_area_mm2": 50874.81641692933,
+      "clearance_ratio": 0.0
+    }
+  },
+  {
+    "index": 19,
+    "type": "WINDOW",
+    "width_mm": 2721.70172797308,
+    "depth_mm": 69.41538000000001,
+    "target_height_mm": 1000.0,
+    "base_height_mm": 1000.0,
+    "wall_index": 19,
+    "axis_index": null,
+    "outside_area_mm2": 188927.95969390895,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "0NEbVfjRT5$OomVF9bvgJn",
+    "opening_guid": "1o4CZ7bIH6t88ryQEdCy85",
+    "polygon_coords": [
+      [
+        3362.1530320909346,
+        5256.004539410807
+      ],
+      [
+        6083.854760064014,
+        5256.004539410807
+      ],
+      [
+        6083.854760064014,
+        5325.419919410808
+      ],
+      [
+        3362.1530320909346,
+        5325.419919410808
+      ],
+      [
+        3362.1530320909346,
+        5256.004539410807
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 2721.70172797308,
+      "perp_span_mm": 105.80000000000001,
+      "inside_ratio": 0.30011218164134057,
+      "fallback": true
+    }
+  },
+  {
+    "index": 20,
+    "type": "WINDOW",
+    "width_mm": 1104.5468421972514,
+    "depth_mm": 69.41538000000001,
+    "target_height_mm": 1000.0,
+    "base_height_mm": 1000.0,
+    "wall_index": 14,
+    "axis_index": null,
+    "outside_area_mm2": 76672.53877892061,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "2XIs7Yr41Amv729y0BdtU1",
+    "opening_guid": "0qLf1lHjrAog0Ivc0JldcJ",
+    "polygon_coords": [
+      [
+        12393.82117661188,
+        16050.710672087676
+      ],
+      [
+        13498.368018809131,
+        16050.710672087676
+      ],
+      [
+        13498.368018809131,
+        16120.126052087675
+      ],
+      [
+        12393.82117661188,
+        16120.126052087675
+      ],
+      [
+        12393.82117661188,
+        16050.710672087676
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 1104.5468421972514,
+      "perp_span_mm": 105.80000000000001,
+      "inside_ratio": 0.3341159262096059,
+      "fallback": true
+    }
+  },
+  {
+    "index": 21,
+    "type": "WINDOW",
+    "width_mm": 1123.268584697386,
+    "depth_mm": 144.86688000000004,
+    "target_height_mm": 1000.0,
+    "base_height_mm": 1000.0,
+    "wall_index": 15,
+    "axis_index": null,
+    "outside_area_mm2": 162724.41526712728,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "3mC3AEBiH5EAAyTRe9FiBL",
+    "opening_guid": "3TTPHy9$P558btFc3Y432A",
+    "polygon_coords": [
+      [
+        19396.613930850093,
+        15973.922422087675
+      ],
+      [
+        20519.882515547477,
+        15973.922422087675
+      ],
+      [
+        20519.882515547477,
+        16118.789302087676
+      ],
+      [
+        19396.613930850093,
+        16118.789302087676
+      ],
+      [
+        19396.613930850093,
+        15973.922422087675
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 1123.268584697386,
+      "perp_span_mm": 220.8,
+      "inside_ratio": 0.36179016272063347,
+      "fallback": true
+    }
+  },
+  {
+    "index": 22,
+    "type": "WINDOW",
+    "width_mm": 2592.0925728112707,
+    "depth_mm": 144.86688000000004,
+    "target_height_mm": 1000.0,
+    "base_height_mm": 1000.0,
+    "wall_index": 6,
+    "axis_index": null,
+    "outside_area_mm2": 375508.3636943405,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "3Z$xG68c946R7owjgjc_qi",
+    "opening_guid": "3$3qes5$j5WBkI0MhI1bL8",
+    "polygon_coords": [
+      [
+        5457.763724966363,
+        10949.093450193759
+      ],
+      [
+        5457.763724966363,
+        13541.18602300503
+      ],
+      [
+        5312.8968449663635,
+        13541.18602300503
+      ],
+      [
+        5312.8968449663635,
+        10949.093450193759
+      ],
+      [
+        5457.763724966363,
+        10949.093450193759
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 2592.0925728112707,
+      "perp_span_mm": 220.8,
+      "inside_ratio": 0.3474100446829888,
+      "fallback": true
+    }
+  },
+  {
+    "index": 23,
+    "type": "DOOR",
+    "width_mm": 1319.4532006659738,
+    "depth_mm": 181.08360000000002,
+    "target_height_mm": 2100.0,
+    "base_height_mm": 0.0,
+    "wall_index": 3,
+    "axis_index": null,
+    "outside_area_mm2": 238931.3356081189,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "3ZQGF02j5C3enJXxHRBuNp",
+    "opening_guid": "2GFvaOBR55nxomPgZ7kgel",
+    "polygon_coords": [
+      [
+        12238.775413730602,
+        9079.700245660635
+      ],
+      [
+        12238.775413730602,
+        10399.153446326607
+      ],
+      [
+        12057.6918137306,
+        10399.153446326607
+      ],
+      [
+        12057.6918137306,
+        9079.700245660635
+      ],
+      [
+        12238.775413730602,
+        9079.700245660635
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 1319.4532006659738,
+      "perp_span_mm": 276.0,
+      "inside_ratio": 0.32347650674165457,
+      "fallback": true
+    }
+  },
+  {
+    "index": 24,
+    "type": "WINDOW",
+    "width_mm": 2955.9976724500334,
+    "depth_mm": 144.86688000000004,
+    "target_height_mm": 1000.0,
+    "base_height_mm": 1000.0,
+    "wall_index": 8,
+    "axis_index": null,
+    "outside_area_mm2": 428226.1600950966,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "1$7Po0K0L3kA3IDSK$HGzm",
+    "opening_guid": "0uc9dFctz4cgX_RLvj8XVd",
+    "polygon_coords": [
+      [
+        18773.652164751547,
+        5526.4385116330295
+      ],
+      [
+        21729.649837201578,
+        5526.4385116330295
+      ],
+      [
+        21729.649837201578,
+        5671.305391633029
+      ],
+      [
+        18773.652164751547,
+        5671.305391633029
+      ],
+      [
+        18773.652164751547,
+        5526.4385116330295
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 2955.9976724500334,
+      "perp_span_mm": 220.8,
+      "inside_ratio": 0.27732704740263836,
+      "fallback": true
+    }
+  },
+  {
+    "index": 25,
+    "type": "WINDOW",
+    "width_mm": 823.7302954447512,
+    "depth_mm": 69.41538000000001,
+    "target_height_mm": 1000.0,
+    "base_height_mm": 1000.0,
+    "wall_index": 22,
+    "axis_index": null,
+    "outside_area_mm2": 37855.22190812783,
+    "inside_area_mm2": 19324.329567682966,
+    "inside_ratio": 0.33795874694571393,
+    "wall_guid": "3hbbK343TFrOJaSC6NgnSS",
+    "opening_guid": "2RA5kl9kD9wOJ9fYSh04a_",
+    "polygon_coords": [
+      [
+        18178.181145171275,
+        16177.117384559633
+      ],
+      [
+        17595.715867393486,
+        15594.652106781856
+      ],
+      [
+        17644.79995331013,
+        15545.568020865214
+      ],
+      [
+        18227.265231087917,
+        16128.033298642991
+      ],
+      [
+        18178.181145171275,
+        16177.117384559633
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 823.7302954447512,
+      "perp_span_mm": 105.80000000000001,
+      "inside_ratio": 0.45165555233698107,
+      "outside_ratio": 0.5483444476630189,
+      "outside_area_mm2": 47788.583404393125,
+      "clearance_ratio": 0.0
+    }
+  },
+  {
+    "index": 26,
+    "type": "DOOR",
+    "width_mm": 899.8620784452271,
+    "depth_mm": 69.41538000000001,
+    "target_height_mm": 2100.0,
+    "base_height_mm": 0.0,
+    "wall_index": 1,
+    "axis_index": null,
+    "outside_area_mm2": 62464.26812286451,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "20_b1YQhzDjOKsQeMJmMaw",
+    "opening_guid": "015iQqwRnFsw28LwilS_3u",
+    "polygon_coords": [
+      [
+        15950.836016049967,
+        9736.041173018855
+      ],
+      [
+        16353.266571605522,
+        10540.902284129965
+      ],
+      [
+        16291.179568259931,
+        10571.945785802762
+      ],
+      [
+        15888.749012704377,
+        9767.084674691652
+      ],
+      [
+        15950.836016049967,
+        9736.041173018855
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.06025830596686541,
+      "span_mm": 899.8620784452271,
+      "perp_span_mm": 105.80000000000001,
+      "inside_ratio": 0.5610342612876846,
+      "outside_ratio": 0.4389657387123153,
+      "outside_area_mm2": 41791.912208013804,
+      "clearance_ratio": 0.0
+    }
+  },
+  {
+    "index": 27,
+    "type": "WINDOW",
+    "width_mm": 636.5188646618494,
+    "depth_mm": 181.08360000000002,
+    "target_height_mm": 1000.0,
+    "base_height_mm": 1000.0,
+    "wall_index": 6,
+    "axis_index": null,
+    "outside_area_mm2": 115263.1274808808,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "1IsRXvPDn6kxe_ADODb3wk",
+    "opening_guid": "3VcDXVEzXAIRwBbcBg9MGz",
+    "polygon_coords": [
+      [
+        5560.239855872194,
+        11756.42808236023
+      ],
+      [
+        5110.153050316638,
+        11306.341276804675
+      ],
+      [
+        5238.19849183831,
+        11178.295835283001
+      ],
+      [
+        5688.285297393866,
+        11628.382640838556
+      ],
+      [
+        5560.239855872194,
+        11756.42808236023
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.007752792715961457,
+      "span_mm": 636.5188646618494,
+      "perp_span_mm": 276.0,
+      "inside_ratio": 0.6545051283051075,
+      "outside_ratio": 0.3454948716948925,
+      "outside_area_mm2": 60696.26495985192,
+      "clearance_ratio": 0.0
+    }
+  },
+  {
+    "index": 28,
+    "type": "WINDOW",
+    "width_mm": 842.4526373667268,
+    "depth_mm": 69.41538000000001,
+    "target_height_mm": 1000.0,
+    "base_height_mm": 1000.0,
+    "wall_index": 28,
+    "axis_index": null,
+    "outside_area_mm2": 58479.169954812445,
+    "inside_area_mm2": 0.0,
+    "inside_ratio": 0.0,
+    "wall_guid": "1C8qOT0CbFqgP17zPLs_DE",
+    "opening_guid": "3QrcIgmnz4tgQ_ncfF55Qn",
+    "polygon_coords": [
+      [
+        15735.806626737645,
+        15967.377338754342
+      ],
+      [
+        16578.259264104374,
+        15967.377338754342
+      ],
+      [
+        16578.259264104374,
+        16036.792718754341
+      ],
+      [
+        15735.806626737645,
+        16036.792718754341
+      ],
+      [
+        15735.806626737645,
+        15967.377338754342
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 842.4526373667268,
+      "perp_span_mm": 105.80000000000001,
+      "inside_ratio": 0.22209146901501536,
+      "fallback": true
+    }
+  },
+  {
+    "index": 29,
+    "type": "WINDOW",
+    "width_mm": 1985.6770833333358,
+    "depth_mm": 69.41538000000001,
+    "target_height_mm": 1000.0,
+    "base_height_mm": 1000.0,
+    "wall_index": 16,
+    "axis_index": 109,
+    "outside_area_mm2": 99973.3329248403,
+    "inside_area_mm2": 37863.19637203197,
+    "inside_ratio": 0.27469638538621516,
+    "wall_guid": "0_DTmXJH15MwbyvqZZNN5D",
+    "opening_guid": "1DBLukS$9DG9l09S5L3xFG",
+    "polygon_coords": [
+      [
+        17276.607598198785,
+        15867.119546599395
+      ],
+      [
+        19262.28468153212,
+        15867.119546599395
+      ],
+      [
+        19262.28468153212,
+        15936.534926599394
+      ],
+      [
+        17276.607598198785,
+        15936.534926599394
+      ],
+      [
+        17276.607598198785,
+        15867.119546599395
+      ]
+    ],
+    "fit_metrics": {
+      "iou": 0.0,
+      "span_mm": 1985.6770833333358,
+      "perp_span_mm": 105.80000000000001,
+      "inside_ratio": 0.22745293086274246,
+      "fallback": true
+    }
+  }
+]

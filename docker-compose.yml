@@ -1,0 +1,47 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    environment:
+      - CELERY_BROKER_URL=redis://queue:6379/0
+      - CELERY_RESULT_BACKEND=redis://queue:6379/1
+      - DATABASE_URL=postgresql+psycopg://bimify:bimify@db:5432/bimify
+      - AWS_REGION=eu-central-1
+      - ROBOFLOW_API_KEY=${ROBOFLOW_API_KEY:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - queue
+      - db
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    environment:
+      - CELERY_BROKER_URL=redis://queue:6379/0
+      - CELERY_RESULT_BACKEND=redis://queue:6379/1
+      - DATABASE_URL=postgresql+psycopg://bimify:bimify@db:5432/bimify
+      - AWS_REGION=eu-central-1
+      - ROBOFLOW_API_KEY=${ROBOFLOW_API_KEY:-}
+    depends_on:
+      - queue
+      - db
+
+  queue:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=bimify
+      - POSTGRES_PASSWORD=bimify
+      - POSTGRES_DB=bimify
+    ports:
+      - "5432:5432"
+
