@@ -68,7 +68,7 @@ def generate_viewer_html(plan: CanonicalPlan, output_path: Path) -> None:
         <label><input type="checkbox" id="showLabels" checked> Labels</label>
     </div>
     <canvas id="canvas"></canvas>
-    <div id="info">Hover over elements to see details</div>
+    <div id="info">Hover over openings to see sill/head metadata</div>
 
     <script>
         const planData = {plan_json};
@@ -82,6 +82,7 @@ def generate_viewer_html(plan: CanonicalPlan, output_path: Path) -> None:
         let isDragging = false;
         let lastX = 0;
         let lastY = 0;
+        let hoverOpening = null;
         
         // Setup canvas
         function resizeCanvas() {{
@@ -107,6 +108,9 @@ def generate_viewer_html(plan: CanonicalPlan, output_path: Path) -> None:
                 lastX = e.clientX;
                 lastY = e.clientY;
                 draw();
+            }} else {{
+                hoverOpening = pickOpening(e.clientX, e.clientY);
+                updateInfo();
             }}
         }});
         
@@ -127,6 +131,65 @@ def generate_viewer_html(plan: CanonicalPlan, output_path: Path) -> None:
             return m * 100 * scale;
         }}
         
+        function pickOpening(screenX, screenY) {{
+            const rect = canvas.getBoundingClientRect();
+            const x = (screenX - rect.left - offsetX) / (100 * scale);
+            const y = (screenY - rect.top - offsetY) / (100 * scale);
+
+            for (const opening of planData.openings) {{
+                const wall = planData.walls.find(w => w.id === opening.hostWallId);
+                if (!wall || wall.polyline.length < 2) continue;
+
+                const start = wall.polyline[0];
+                const end = wall.polyline[wall.polyline.length - 1];
+                const dx = end.x - start.x;
+                const dy = end.y - start.y;
+                const length = Math.sqrt(dx * dx + dy * dy);
+                if (length === 0) continue;
+
+                const px = start.x + opening.s * dx;
+                const py = start.y + opening.s * dy;
+                const sill = opening.sillHeight ?? 0;
+                const overall = opening.overallHeight ?? opening.height ?? 0;
+                const halfWidth = (opening.width ?? 0) / 2;
+                const perpX = -dy / length;
+                const perpY = dx / length;
+
+                const p1x = px + perpX * halfWidth;
+                const p1y = py + perpY * halfWidth;
+                const p2x = px - perpX * halfWidth;
+                const p2y = py - perpY * halfWidth;
+
+                // Simple distance check to segment
+                const t = ((x - p1x) * (p2x - p1x) + (y - p1y) * (p2y - p1y)) / ((p2x - p1x) ** 2 + (p2y - p1y) ** 2);
+                if (t < 0 || t > 1) continue;
+                const projX = p1x + t * (p2x - p1x);
+                const projY = p1y + t * (p2y - p1y);
+                const dist = Math.sqrt((x - projX) ** 2 + (y - projY) ** 2);
+                if (dist < 0.1) {{
+                    return {{ opening, sill, overall }};
+                }}
+            }}
+            return null;
+        }}
+
+        function updateInfo() {{
+            const info = document.getElementById('info');
+            if (!hoverOpening) {{
+                info.textContent = 'Hover over openings to see sill/head metadata';
+                return;
+            }}
+            const {{ opening, sill, overall }} = hoverOpening;
+            const head = opening.headHeight ?? (sill + overall);
+            info.textContent = (
+                opening.type.toUpperCase() +
+                ' width=' + (opening.width ?? 0).toFixed(3) + 'm' +
+                ' | sill=' + sill.toFixed(3) + 'm' +
+                ' | head=' + head.toFixed(3) + 'm' +
+                ' | height=' + (opening.overallHeight ?? opening.height ?? 0).toFixed(3) + 'm'
+            );
+        }}
+
         function draw() {{
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
@@ -158,10 +221,7 @@ def generate_viewer_html(plan: CanonicalPlan, output_path: Path) -> None:
                     }}
                     
                     if (showLabels && room.polygon.length > 0) {{
-                        const center = room.polygon.reduce((acc, p) => ({{
-                            x: acc.x + p.x,
-                            y: acc.y + p.y
-                        }}), {{x: 0, y: 0}});
+                        const center = room.polygon.reduce((acc, p) => ({{x: acc.x + p.x, y: acc.y + p.y}}), {{x: 0, y: 0}});
                         center.x /= room.polygon.length;
                         center.y /= room.polygon.length;
                         
@@ -234,7 +294,12 @@ def generate_viewer_html(plan: CanonicalPlan, output_path: Path) -> None:
                     if (showLabels) {{
                         ctx.fillStyle = '#fff';
                         ctx.font = '10px Arial';
-                        ctx.fillText(opening.type, mToPx(px), mToPx(py));
+                        const sill = opening.sillHeight ?? 0;
+                        const head = opening.headHeight ?? (sill + (opening.overallHeight ?? opening.height ?? 0));
+                        const sillText = opening.sillHeight == null ? 'n/a' : sill.toFixed(2);
+                        const headText = opening.headHeight == null ? 'n/a' : head.toFixed(2);
+                        const label = opening.type + ' (' + sillText + 'm/' + headText + 'm)';
+                        ctx.fillText(label, mToPx(px), mToPx(py));
                     }}
                 }});
             }}

@@ -108,6 +108,18 @@ def validate_plan(plan: CanonicalPlan, tolerance_m: float = 0.01) -> ValidationR
         # Check opening position
         if opening.s < 0 or opening.s > 1:
             opening_issues.append(f"Opening {opening.id} has invalid position s={opening.s}")
+        if opening.overallHeight is not None and opening.overallHeight <= 0:
+            opening_issues.append(f"Opening {opening.id} has non-positive overallHeight {opening.overallHeight}")
+        if opening.sillHeight is not None and opening.sillHeight < 0:
+            opening_issues.append(f"Opening {opening.id} has negative sillHeight {opening.sillHeight}")
+        if (
+            opening.headHeight is not None
+            and opening.sillHeight is not None
+            and opening.headHeight < opening.sillHeight
+        ):
+            opening_issues.append(
+                f"Opening {opening.id} headHeight {opening.headHeight} below sillHeight {opening.sillHeight}"
+            )
         
         # Check opening is within wall bounds
         if len(host_wall.polyline) >= 2:

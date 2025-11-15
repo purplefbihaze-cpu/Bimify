@@ -35,7 +35,7 @@ python -m core.merge.cli \
 
 ## Components
 
-- `schema.py` - Canonical JSON schema
+- `schema.py` - Canonical JSON schema (openings include `sillHeight`, `headHeight`, `overallHeight`, `depth` for IFC export)
 - `parsers.py` - Parsers for all 3 model formats
 - `wall_graph.py` - Wall centerline graph with snapping
 - `wall_cleaner.py` - Clean wall line extraction from Model 3

@@ -10,6 +10,7 @@ from .wall_graph import WallGraph
 from .wall_cleaner import extract_clean_walls, CleanWallLine
 from .schema import CanonicalPlan, Wall, Opening, Room, Point2D, Metadata
 from .alignment import check_coregistration
+from config.ifc_standards import STANDARDS
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,60 @@ def project_opening_to_wall(
     s = max(0.0, min(1.0, t))
     
     return s
+
+
+def _opening_vertical_defaults(opening_type: str, wall_thickness_m: float) -> Dict[str, float]:
+    """Return default sill/head/height/depth values for an opening."""
+    base_depth = wall_thickness_m if wall_thickness_m and wall_thickness_m > 0 else STANDARDS.get("WALL_INTERNAL_THICKNESS", 0.115)
+    if opening_type == "door":
+        sill = STANDARDS.get("DOOR_SILL_HEIGHT", 0.0)
+        overall = STANDARDS.get("DOOR_HEIGHT", 2.0)
+        head = STANDARDS.get("DOOR_HEAD_HEIGHT", sill + overall)
+    else:
+        sill = STANDARDS.get("WINDOW_SILL_HEIGHT", 0.9)
+        overall = STANDARDS.get("WINDOW_OVERALL_HEIGHT", STANDARDS.get("WINDOW_HEIGHT", 1.2))
+        head = STANDARDS.get("WINDOW_HEAD_HEIGHT", sill + overall)
+    head = max(head, sill + overall)
+    return {
+        "sill": sill,
+        "overall": overall,
+        "head": head,
+        "depth": base_depth,
+    }
+
+
+def _create_opening_model(
+    opening_id: str,
+    opening_type: str,
+    host_wall: Wall,
+    s_param: float,
+    width_m: float,
+    height_m: float,
+    confidence: float,
+    swing_direction: Optional[str] = None,
+) -> Opening:
+    """Instantiate Opening with vertical defaults applied."""
+    defaults = _opening_vertical_defaults(opening_type, host_wall.thickness)
+    overall_height = defaults["overall"]
+    sill_height = defaults["sill"]
+    head_height = defaults["head"]
+    depth = defaults["depth"]
+    if head_height < sill_height + overall_height:
+        head_height = sill_height + overall_height
+    return Opening(
+        id=opening_id,
+        type=opening_type,
+        hostWallId=host_wall.id,
+        s=max(0.0, min(1.0, s_param)),
+        width=width_m,
+        height=height_m,
+        confidence=confidence,
+        swingDirection=swing_direction,
+        sillHeight=sill_height,
+        headHeight=head_height,
+        overallHeight=overall_height,
+        depth=depth,
+    )
 
 
 def merge_models(
@@ -289,15 +344,17 @@ def merge_models(
             width_m = m3_opening.bbox[2] * px_to_meter
             height_m = m3_opening.bbox[3] * px_to_meter
             
-            merged_openings.append(Opening(
-                id=m3_opening.id,
-                type=m3_opening.type,
-                hostWallId=best_wall.id,
-                s=best_s,
-                width=width_m,
-                height=height_m,
-                confidence=m3_opening.confidence
-            ))
+            merged_openings.append(
+                _create_opening_model(
+                    opening_id=m3_opening.id,
+                    opening_type=m3_opening.type,
+                    host_wall=best_wall,
+                    s_param=best_s,
+                    width_m=width_m,
+                    height_m=height_m,
+                    confidence=m3_opening.confidence,
+                )
+            )
             used_openings.add(m3_opening.id)
             logger.debug(f"M3 opening {m3_opening.id} ({m3_opening.type}) placed on wall {best_wall.id} at s={best_s:.3f}")
         else:
@@ -379,15 +436,17 @@ def merge_models(
             width_m = m1_opening.bbox[2] * px_to_meter
             height_m = m1_opening.bbox[3] * px_to_meter
             
-            merged_openings.append(Opening(
-                id=m1_opening.id,
-                type=m1_opening.type,
-                hostWallId=best_wall.id,
-                s=best_s,
-                width=width_m,
-                height=height_m,
-                confidence=m1_opening.confidence
-            ))
+            merged_openings.append(
+                _create_opening_model(
+                    opening_id=m1_opening.id,
+                    opening_type=m1_opening.type,
+                    host_wall=best_wall,
+                    s_param=best_s,
+                    width_m=width_m,
+                    height_m=height_m,
+                    confidence=m1_opening.confidence,
+                )
+            )
             used_openings.add(m1_opening.id)
             logger.debug(f"M1 opening {m1_opening.id} ({m1_opening.type}) placed on wall {best_wall.id} at s={best_s:.3f}")
     

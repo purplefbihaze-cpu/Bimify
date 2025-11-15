@@ -541,7 +541,9 @@ async def run_ifc_export_v2(
             def _test_parse() -> None:
                 try:
                     test_model = ifc_io.open(str(out_path))
-                    test_model.close()
+                    close_fn = getattr(test_model, "close", None)
+                    if callable(close_fn):
+                        close_fn()
                 except Exception as e:
                     logger.warning("[export-ifc-v2] IFC file could not be parsed: %s", e)
                     warnings.append(f"IFC-Datei konnte nicht geparst werden: {e}")

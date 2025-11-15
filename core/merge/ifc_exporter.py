@@ -232,6 +232,15 @@ def export_to_ifc(
         opening_x = start_pt.x + s * dx
         opening_y = start_pt.y + s * dy
         
+        sill_height = opening.sillHeight or 0.0
+        overall_height = opening.overallHeight or opening.height
+        if overall_height is None or overall_height <= 0:
+            overall_height = opening.height or 2.0
+        head_height = opening.headHeight or (sill_height + overall_height)
+        depth_m = opening.depth or wall_obj.thickness
+        if depth_m is None or depth_m <= 0:
+            depth_m = wall_obj.thickness if hasattr(wall_obj, "thickness") else 0.2
+        
         # Create opening element first
         opening_elem = ifcopenshell.api.run(
             "root.create_entity",
@@ -245,8 +254,8 @@ def export_to_ifc(
         opening_profile_points = [
             model.createIfcCartesianPoint((0.0, 0.0, 0.0)),
             model.createIfcCartesianPoint((opening.width, 0.0, 0.0)),
-            model.createIfcCartesianPoint((opening.width, opening.height, 0.0)),
-            model.createIfcCartesianPoint((0.0, opening.height, 0.0)),
+            model.createIfcCartesianPoint((opening.width, overall_height, 0.0)),
+            model.createIfcCartesianPoint((0.0, overall_height, 0.0)),
         ]
         opening_profile_polyline = model.createIfcPolyline(opening_profile_points)
         opening_profile = model.createIfcArbitraryClosedProfileDef("AREA", None, opening_profile_polyline)
@@ -257,7 +266,7 @@ def export_to_ifc(
                 model,
                 context=body_context,
                 profile=opening_profile,
-                depth=wall_obj.thickness,
+                depth=depth_m,
             )
         except:
             # Fallback: create simple box representation
@@ -280,7 +289,11 @@ def export_to_ifc(
         perp_y = wall_dir_x
         
         # Opening center position
-        opening_center = (opening_x, opening_y, opening.height / 2)
+        opening_center = (
+            opening_x,
+            opening_y,
+            sill_height + overall_height / 2,
+        )
         
         # Create placement
         opening_placement = model.createIfcLocalPlacement(
@@ -309,6 +322,11 @@ def export_to_ifc(
                 ifc_class="IfcDoor",
                 name=f"Door-{opening.id}",
             )
+            try:
+                fill_elem.OverallHeight = overall_height
+                fill_elem.OverallWidth = opening.width
+            except Exception:
+                pass
         else:
             fill_elem = ifcopenshell.api.run(
                 "root.create_entity",
@@ -316,6 +334,11 @@ def export_to_ifc(
                 ifc_class="IfcWindow",
                 name=f"Window-{opening.id}",
             )
+            try:
+                fill_elem.OverallHeight = overall_height
+                fill_elem.OverallWidth = opening.width
+            except Exception:
+                pass
         
         # Fill opening
         ifcopenshell.api.run(
@@ -324,6 +347,26 @@ def export_to_ifc(
             opening=opening_elem,
             element=fill_elem,
         )
+        # Add property sets for sizing metadata
+        try:
+            if opening.type == "door":
+                pset = ifcopenshell.api.run("pset.add_pset", model, product=fill_elem, name="Pset_DoorCommon")
+                props = {
+                    "OverallHeight": overall_height,
+                    "OverallWidth": opening.width,
+                    "ThresholdHeight": sill_height,
+                }
+            else:
+                pset = ifcopenshell.api.run("pset.add_pset", model, product=fill_elem, name="Pset_WindowCommon")
+                props = {
+                    "OverallHeight": overall_height,
+                    "OverallWidth": opening.width,
+                    "SillHeight": sill_height,
+                    "HeadHeight": head_height,
+                }
+            ifcopenshell.api.run("pset.edit_pset", model, pset=pset, properties=props)
+        except Exception:
+            pass
         
         # Place in storey
         ifcopenshell.api.run(

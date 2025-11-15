@@ -17,6 +17,8 @@ STANDARDS = {
     
     # --- FENSTER ---
     "WINDOW_SILL_HEIGHT": 0.9,  # OKFF + 0,9m = Brüstung
+    "WINDOW_OVERALL_HEIGHT": 1.2,  # lichte Höhe der Öffnung
+    "WINDOW_HEAD_HEIGHT": 2.1,  # Oberkante Fensteröffnung in Meter
     "WINDOW_FRAME_WIDTH": 0.07,  # in Meter
     "WINDOW_FRAME_DEPTH": 0.09,  # in Meter
     "WINDOW_U_VALUE": 1.4,  # W/m²K
@@ -24,8 +26,10 @@ STANDARDS = {
     "WINDOW_GLASS_AREA_RATIO": 0.8,  # 80% Glasfläche
     
     # --- TÜREN ---
+    "DOOR_SILL_HEIGHT": 0.0,  # Schwellenhöhe ab OKFF
     "DOOR_WIDTH": 0.9,  # in Meter
     "DOOR_HEIGHT": 2.0,  # in Meter
+    "DOOR_HEAD_HEIGHT": 2.0,  # Oberkante Türöffnung in Meter
     "DOOR_FRAME_WIDTH": 0.07,  # in Meter
     "DOOR_FIRE_RATING": "T30",
     "DOOR_HANDICAP_ACCESSIBLE": False,  # IfcBoolean

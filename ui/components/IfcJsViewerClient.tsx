@@ -200,15 +200,47 @@ export default function IfcJsViewerClient({ ifcUrl, className = "", height = DEF
   const collectCategoryIds = async (manager: IFCLoader["ifcManager"], modelID: number) => {
     const ids = createEmptyCategoryIds();
 
-    ids.windows = sanitizeIds(await manager.getAllItemsOfType(modelID, IFCWINDOW, false));
-    ids.doors = sanitizeIds(await manager.getAllItemsOfType(modelID, IFCDOOR, false));
-    ids.roofs = sanitizeIds(await manager.getAllItemsOfType(modelID, IFCROOF, false));
+    if (
+      !manager ||
+      typeof manager.getAllItemsOfType !== "function" ||
+      !manager.ifcAPI ||
+      typeof (manager.ifcAPI as any)?.GetLineIDsWithType !== "function"
+    ) {
+      console.warn("[ifc-viewer] IFC manager is not ready; skipping category extraction");
+      return { categories: ids, others: [] };
+    }
 
-    const slabCandidates = sanitizeIds(await manager.getAllItemsOfType(modelID, IFCSLAB, false));
+    const safeGetAllItems = async (type: number) => {
+      try {
+        const values = await manager.getAllItemsOfType(modelID, type, false);
+        return sanitizeIds(values);
+      } catch (error) {
+        console.warn(`[ifc-viewer] getAllItemsOfType failed for type ${type}`, error);
+        return [] as number[];
+      }
+    };
+
+    const safeGetProperties = async (elementID: number) => {
+      if (typeof manager.getItemProperties !== "function") {
+        return null;
+      }
+      try {
+        return await manager.getItemProperties(modelID, elementID, true, true);
+      } catch (error) {
+        console.warn(`[ifc-viewer] getItemProperties failed for id ${elementID}`, error);
+        return null;
+      }
+    };
+
+    ids.windows = await safeGetAllItems(IFCWINDOW);
+    ids.doors = await safeGetAllItems(IFCDOOR);
+    ids.roofs = await safeGetAllItems(IFCROOF);
+
+    const slabCandidates = await safeGetAllItems(IFCSLAB);
     const floorBuffer: number[] = [];
     for (const id of slabCandidates) {
       try {
-        const props = await manager.getItemProperties(modelID, id, true, true);
+        const props = await safeGetProperties(id);
         const rawType = (props?.PredefinedType?.value ?? props?.PredefinedType ?? "") as string;
         const typeValue = String(rawType).toUpperCase();
         if (!typeValue || typeValue.includes("FLOOR") || typeValue.includes("BASESLAB")) {
@@ -220,11 +252,11 @@ export default function IfcJsViewerClient({ ifcUrl, className = "", height = DEF
     }
     ids.floors = sanitizeIds(floorBuffer.length ? floorBuffer : slabCandidates);
 
-    const coveringCandidates = sanitizeIds(await manager.getAllItemsOfType(modelID, IFCCOVERING, false));
+    const coveringCandidates = await safeGetAllItems(IFCCOVERING);
     const ceilingBuffer: number[] = [];
     for (const id of coveringCandidates) {
       try {
-        const props = await manager.getItemProperties(modelID, id, true, true);
+        const props = await safeGetProperties(id);
         const rawType = (props?.PredefinedType?.value ?? props?.PredefinedType ?? "") as string;
         const typeValue = String(rawType).toUpperCase();
         if (typeValue.includes("CEILING") || typeValue.includes("ROOF")) {
@@ -237,8 +269,8 @@ export default function IfcJsViewerClient({ ifcUrl, className = "", height = DEF
     ids.ceilings = sanitizeIds(ceilingBuffer.length ? ceilingBuffer : coveringCandidates);
 
     const wallBase = new Set<number>([
-      ...sanitizeIds(await manager.getAllItemsOfType(modelID, IFCWALL, false)),
-      ...sanitizeIds(await manager.getAllItemsOfType(modelID, IFCWALLSTANDARDCASE, false)),
+      ...await safeGetAllItems(IFCWALL),
+      ...await safeGetAllItems(IFCWALLSTANDARDCASE),
     ]);
     const interiorWallSet = new Set<number>();
     const exteriorWallSet = new Set<number>();
@@ -246,7 +278,7 @@ export default function IfcJsViewerClient({ ifcUrl, className = "", height = DEF
 
     for (const id of wallBase) {
       try {
-        const props = await manager.getItemProperties(modelID, id, true, true);
+        const props = await safeGetProperties(id);
         const raw = props?.IsExternal;
         let isExternal: boolean | null = null;
         if (typeof raw === "boolean") {
@@ -473,7 +505,7 @@ export default function IfcJsViewerClient({ ifcUrl, className = "", height = DEF
 
         const { IFCLoader } = await import("web-ifc-three/IFCLoader");
         loader = new IFCLoader();
-        loader.ifcManager.setWasmPath(WASM_PATH);
+        loader.ifcManager.setWasmPath(WASM_PATH, true);
         ifcLoaderRef.current = loader;
 
         const model = await loader.loadAsync(url);

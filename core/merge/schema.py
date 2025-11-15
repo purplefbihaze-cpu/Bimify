@@ -30,6 +30,26 @@ class Opening(BaseModel):
     height: float = Field(..., description="Opening height in meters")
     confidence: float = Field(..., ge=0.0, le=1.0)
     swingDirection: Optional[str] = Field(None, description="Door swing direction if applicable")
+    sillHeight: Optional[float] = Field(
+        None,
+        ge=0.0,
+        description="Bottom of the opening measured from storey base (meters)",
+    )
+    headHeight: Optional[float] = Field(
+        None,
+        ge=0.0,
+        description="Top of the opening measured from storey base (meters)",
+    )
+    overallHeight: Optional[float] = Field(
+        None,
+        ge=0.0,
+        description="Clear opening height (meters) used for vertical extrusion",
+    )
+    depth: Optional[float] = Field(
+        None,
+        ge=0.0,
+        description="Optional override for opening depth (meters)"
+    )
 
 
 class Room(BaseModel):

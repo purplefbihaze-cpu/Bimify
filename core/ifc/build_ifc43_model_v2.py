@@ -2326,23 +2326,17 @@ class IFCV2Builder:
         except Exception as e:
             logger.debug(f"Could not set PredefinedType for slab {slab.name}: {e}")
         
-        # Adjust elevation if needed (slab elevation is handled by ObjectPlacement)
+        # Adjust elevation if needed - recreate ObjectPlacement with correct elevation
         if slab.elevation != 0.0:
             try:
-                import ifcopenshell.util.placement as placement_util
-                import numpy as np
-                
-                # Update placement to include elevation
-                current_placement = getattr(ifc_slab, "ObjectPlacement", None)
-                if current_placement:
-                    # Get current placement matrix
-                    current_matrix = placement_util.get_local_placement(current_placement)
-                    # Update Z coordinate
-                    current_matrix[2, 3] = slab.elevation
-                    # Note: This is a simplified approach; full implementation would
-                    # require recreating the placement with new Z coordinate
+                # Recreate placement with elevation
+                ifc_slab.ObjectPlacement = self.model.create_entity(
+                    "IfcLocalPlacement",
+                    PlacementRelTo=self.storey.ObjectPlacement,
+                    RelativePlacement=self._axis2placement((0.0, 0.0, slab.elevation)),
+                )
             except Exception as e:
-                logger.debug(f"Could not adjust elevation for slab {slab.name}: {e}")
+                logger.warning(f"Could not set elevation for slab {slab.name}: {e}")
         
         return ifc_slab
     
