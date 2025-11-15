@@ -8,7 +8,8 @@ import ifcopenshell.api
 
 
 def export_ifc43(out_path: Path) -> Path:
-    model = ifcopenshell.api.run("project.create_file", schema="IFC4")
+    # ifcopenshell.api.project.create_file uses `version` as parameter name
+    model = ifcopenshell.api.run("project.create_file", version="IFC4")
     project = ifcopenshell.api.run("root.create_entity", model, ifc_class="IfcProject", name="Bimify Project")
     ifcopenshell.api.run(
         "unit.assign_unit",

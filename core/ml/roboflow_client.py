@@ -4,12 +4,14 @@ import asyncio
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, List, Tuple
-from urllib.parse import urlparse
+from typing import Any, List, Optional, Tuple
 
 from inference_sdk import InferenceHTTPClient
+from pydantic import BaseModel, Field, validator
+from urllib.parse import urlparse
 
 from core.settings import get_settings
+from core.exceptions import RoboflowAPIError, ConfigurationError
 
 
 @dataclass
@@ -19,6 +21,31 @@ class RFOptions:
     confidence: float = 0.01
     overlap: float = 0.3
     per_class: dict[str, float] | None = None
+
+
+class RoboflowPrediction(BaseModel):
+    """Pydantic model for Roboflow JSON predictions with validation.
+    
+    Provides type safety and automatic validation for prediction data.
+    """
+    klass: str = Field(alias="class", description="Object class name")
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence score between 0 and 1")
+    points: List[Tuple[float, float]] = Field(default_factory=list, description="Polygon points")
+    x: Optional[float] = Field(default=None, description="Bounding box center x coordinate")
+    y: Optional[float] = Field(default=None, description="Bounding box center y coordinate")
+    width: Optional[float] = Field(default=None, description="Bounding box width")
+    height: Optional[float] = Field(default=None, description="Bounding box height")
+    
+    class Config:
+        allow_population_by_field_name = True  # Allow both "class" and "klass"
+        populate_by_name = True
+    
+    @validator("points")
+    def validate_polygon(cls, v):
+        """Validate that polygon has at least 3 points if provided."""
+        if v and len(v) < 3:
+            raise ValueError("Polygon must have at least 3 points")
+        return v
 
 
 @dataclass
@@ -146,54 +173,40 @@ async def infer_floorplan_with_raw(
     )
     api_key = (api_key_override or "").strip() or settings.api_key
     if not api_key:
-        raise RuntimeError("ROBOFLOW_API_KEY is not set")
+        raise ConfigurationError("ROBOFLOW_API_KEY is not set", {"setting": "roboflow.api_key"})
     base_url = settings.api_url or "https://serverless.roboflow.com"
     api_url = base_url.rstrip("/")
     if _is_serverless_endpoint(api_url):
         api_url = _serverless_base(api_url)
     project_id = _project_id_only(options.project)
     model_id = f"{project_id}/{options.version}"
-    raw_per_class_thresholds = options.per_class or {}
-    per_class_thresholds = {
-        klass: float(value) for klass, value in raw_per_class_thresholds.items()
-    }
-    global_confidence = float(options.confidence)
-    min_confidence = min(
-        [global_confidence, *per_class_thresholds.values()]
-    ) if per_class_thresholds else global_confidence
-
     try:
         client = _get_client(api_url, api_key)
         data = await _infer_with_client(
             client,
             image_path,
             model_id,
-            confidence=min_confidence,
+            confidence=float(options.confidence),
             overlap=float(options.overlap),
         )
     except Exception as exc:
-        raise RuntimeError(f"Roboflow inference failed: {exc}") from exc
+        # Provide clearer error messages for common authentication issues
+        error_str = str(exc)
+        if "403" in error_str or "Forbidden" in error_str:
+            raise RuntimeError(
+                f"Roboflow API-Zugriff verweigert (403 Forbidden). "
+                f"Bitte überprüfe deinen API-Key in den Einstellungen. "
+                f"Stelle sicher, dass der Key Zugriff auf Projekt '{project_id}' Version '{options.version}' hat. "
+                f"Details: {exc}"
+            ) from exc
+        raise RoboflowAPIError(f"Roboflow inference failed: {exc}", {"model_id": model_id}) from exc
+    predictions_source: list[dict[str, Any]]
     if isinstance(data, dict):
         predictions_source = list(data.get("predictions", []))
     elif isinstance(data, list):
         predictions_source = list(data)
     else:
         predictions_source = []
-
-    if per_class_thresholds or global_confidence:
-        filtered_predictions: list[dict[str, Any]] = []
-        for pred in predictions_source:
-            klass = str(pred.get("class", ""))
-            threshold = per_class_thresholds.get(klass, global_confidence)
-            confidence_value = float(pred.get("confidence", 0.0))
-            if confidence_value < threshold:
-                continue
-            filtered_predictions.append(pred)
-        if isinstance(data, dict):
-            data = {**data, "predictions": filtered_predictions}
-        elif isinstance(data, list):
-            data = filtered_predictions
-        predictions_source = filtered_predictions
 
     preds: list[RFPred] = []
     for p in predictions_source:

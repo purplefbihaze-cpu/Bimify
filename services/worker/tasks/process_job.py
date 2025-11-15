@@ -330,14 +330,23 @@ async def process_job_async(job_id: str) -> str:
     close_ifc = step_event("ifc_export")
     # write IFC with walls (IsExternal) and spaces + wall params
     ifc_path = ifc_dir / "model.ifc"
+    ifc_settings = getattr(settings, "ifc", None)
     write_ifc_with_spaces(
         all_norm,
         spaces,
         ifc_path,
         wall_axes=axes,
         wall_polygons=wall_polygons,
-        schema_version=getattr(getattr(settings, "ifc", None), "schema", "IFC4"),
-        wall_thickness_standards_mm=getattr(getattr(settings, "ifc", None), "wall_thickness_standards_mm", None),
+        schema_version=getattr(ifc_settings, "schema", "IFC4"),
+        wall_thickness_standards_mm=getattr(ifc_settings, "wall_thickness_standards_mm", None),
+        owner_org_name=getattr(ifc_settings, "owner_org_name", None),
+        owner_org_identification=getattr(ifc_settings, "owner_org_identification", None),
+        app_identifier=getattr(ifc_settings, "app_identifier", None),
+        app_full_name=getattr(ifc_settings, "app_full_name", None),
+        app_version=getattr(ifc_settings, "app_version", None),
+        person_identification=getattr(ifc_settings, "person_identification", None),
+        person_given_name=getattr(ifc_settings, "person_given_name", None),
+        person_family_name=getattr(ifc_settings, "person_family_name", None),
     )
     mirror(ifc_path)
 

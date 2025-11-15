@@ -1,0 +1,761 @@
+================================================================================
+                    ROBOFLOW JSON ZU IFC - PIPELINE DOKUMENTATION
+================================================================================
+
+Diese Dokumentation beschreibt die vollständig implementierte Pipeline zur
+Konvertierung von Roboflow JSON-Predictions in IFC4-Dateien.
+
+Stand: 2024
+Status: Vollständig implementiert und produktiv
+
+================================================================================
+                            PIPELINE-ÜBERSICHT
+================================================================================
+
+Die Pipeline besteht aus zwei Hauptpfaden:
+
+1. SINGLE-MODEL IFC EXPORT V2
+   - Konvertiert Predictions eines einzelnen Roboflow-Modells zu IFC
+   - Vollständige Post-Processing-Pipeline mit Validierung
+   - Unterstützt GeometryFidelityLevel und GapClosureMode
+
+2. MULTI-MODEL MERGE
+   - Kombiniert Predictions von 3 Roboflow-Modellen (M1, M2, M3)
+   - Erzeugt kanonisches JSON-Format
+   - Topology-Awareness für Öffnungen
+
+================================================================================
+                    PIPELINE 1: SINGLE-MODEL IFC EXPORT V2
+================================================================================
+
+EINGABE:
+--------
+POST /api/export-ifc/v2
+
+Request Body (ExportIFCV2Request):
+- predictions: List[RoboflowPrediction] - Roboflow-Predictions
+- px_per_mm: float - Pixel-zu-Millimeter-Konversionsfaktor
+- storey_height_mm: float - Geschosshöhe
+- door_height_mm: float - Türhöhe
+- window_height_mm: float - Fensterhöhe
+- window_head_elevation_mm: float - Fenstersturz-Höhe (optional)
+- floor_thickness_mm: float - Bodendicke (Standard: 200mm)
+- geometry_fidelity: GeometryFidelityLevel (optional)
+  * LOSSLESS: Kein Snap, keine 90°-Enforcement
+  * HIGH: Snap 2mm, 90° 5°, kein Gap-Closure
+  * MEDIUM: Snap 5mm, 90° 10°, Gap-Closure >50mm
+  * LOW: Snap 10mm, 90° 15°, Gap-Closure >20mm
+- calibration: CalibrationPayload (optional)
+- flip_y: bool (optional)
+- image_height_px: float (optional)
+
+AUSGABE:
+--------
+Response (ExportIFCV2Response):
+- ifc_url: str - URL zur IFC-Datei
+- viewer_url: str - URL zum Viewer HTML
+- topview_url: str - URL zur TopView GeoJSON
+- validation_report_url: str - URL zum Validierungsbericht
+- comparison_report_url: str - URL zum Template-Vergleichsbericht
+- warnings: List[str] - Warnungen
+
+================================================================================
+                    PIPELINE-SCHRITTE
+================================================================================
+
+SCHRITT 1: INPUT-VALIDIERUNG
+-----------------------------
+Datei: core/validate/input_validation.py
+Funktion: validate_raw_predictions()
+
+- Filtert Predictions nach Confidence-Schwellwerten
+- Validiert Polygon-Geometrie (mindestens 3 Punkte)
+- Prüft Dimensionen (Mindestgrößen)
+- Gibt valid_predictions und invalid_predictions zurück
+
+SCHRITT 2: POST-PROCESSING
+---------------------------
+Datei: core/ml/postprocess_v2.py
+Funktion: process_roboflow_predictions_v2()
+
+Bereinigt Pixel-Rauschen:
+- Polygon-Simplification (Douglas-Peucker)
+- Snap-to-Grid (konfigurierbar pro Klasse)
+- Right-Angle-Enforcement (konfigurierbar)
+- Adaptive Grid-Sizes
+
+Konfiguration via PipelineConfig:
+- simplify_tolerance_walls: 2.0mm (Standard)
+- simplify_tolerance_doors_windows: 0.5mm (Standard)
+- grid_size_walls: 50.0mm (Standard)
+- grid_size_doors: 10.0mm (Standard)
+- grid_size_windows: 10.0mm (Standard)
+- angle_tolerance: 5.0° (Standard)
+
+GeometryFidelityLevel überschreibt diese Werte automatisch.
+
+SCHRITT 3: NORMALISIERUNG
+--------------------------
+Datei: core/ml/postprocess_floorplan.py
+Funktion: normalize_predictions()
+
+Konvertiert bereinigte Predictions zu NormalizedDet:
+- Pixel → Millimeter (mit px_per_mm)
+- Klassifizierung (WALL, DOOR, WINDOW, STAIR)
+- Shapely-Polygon-Erstellung
+- Y-Achsen-Spiegelung (wenn flip_y=True)
+
+KOORDINATEN-PRÄZISIONS-GATE:
+----------------------------
+Kritische Validierung für baurechtliche Gültigkeit:
+- Rückkonvertierung mm → px für jeden Punkt
+- Berechnung des maximalen Fehlers (Euklidische Distanz)
+- Fehler > 0.5px: CoordinatePrecisionError (Export blockiert)
+- Fehler > 0.1px: Warnung
+
+Implementierung:
+```python
+def _to_px(x_mm: float, y_mm: float) -> Tuple[float, float]:
+    """Rückkonvertierung mm → px für Präzisions-Validierung."""
+    y_px = y_mm * px_to_mm
+    if flip_height is not None:
+        y_px = flip_height - y_px
+    return (x_mm * px_to_mm, y_px)
+
+# Nach Polygon-Erstellung:
+max_error = 0.0
+for (px_x, px_y), mm_point in zip(pts, polygon_mm.exterior.coords):
+    back_px = _to_px(mm_point[0], mm_point[1])
+    error = math.hypot(px_x - back_px[0], px_y - back_px[1])
+    max_error = max(max_error, error)
+
+if max_error > 0.5:
+    raise CoordinatePrecisionError(...)
+```
+
+SCHRITT 4: RECONSTRUCTION
+--------------------------
+Datei: core/ml/postprocess_floorplan.py
+Funktion: estimate_wall_axes_and_thickness()
+
+Erstellt Wandachsen und schätzt Wanddicke.
+
+METHODEN-HIERARCHIE (Fallback-System):
+--------------------------------------
+1. SKELETONIZATION (Standard)
+   - Morphologische Skeletonization mit OpenCV
+   - Medial Axis Transform
+   - Validierung mit _is_valid_axis()
+   - Nur gültige Achsen werden verwendet
+
+2. BOUNDING_BOX (Fallback)
+   - Minimum Rotated Rectangle
+   - Längste Kante = Achse, kürzeste = Breite
+   - Validierung mit _is_valid_axis()
+
+3. CENTERLINE_HEURISTIC (Fallback)
+   - Inward-Buffer für Centerline
+   - Für orthogonale Pläne
+   - Validierung mit _is_valid_axis()
+
+4. LEGACY_FALLBACK (Letzter Fallback)
+   - Minimum Rotated Rectangle
+   - Validierung mit _is_valid_axis()
+
+_is_valid_axis() Validierung:
+------------------------------
+- Mindestlänge: 60mm
+- Breite: 40mm bis 1000mm
+- Geradheit: Maximale Abweichung ≤ 10% der Länge oder 50mm
+
+RAUM-ERSTELLUNG:
+----------------
+Datei: core/reconstruct/spaces.py
+Funktion: polygonize_spaces_from_walls()
+
+- Union aller Wand-Polygone
+- Difference mit äußerem Boundary
+- Raum-Polygone mit Mindestfläche (konfigurierbar)
+
+SCHRITT 5: GEOMETRIE-VALIDIERUNG
+---------------------------------
+Datei: core/validate/geometry_validation.py
+Funktion: validate_reconstruction()
+
+- Prüft geschlossene/offene Räume
+- Prüft überlappende Räume
+- Prüft Mindestfläche
+- Prüft Wandachsen-Qualität
+
+SCHRITT 6: PRE-EXPORT-VALIDIERUNG
+----------------------------------
+Datei: core/validate/reconstruction_validation.py
+Funktion: validate_before_ifc_export()
+
+GAP-CLOSURE-MODI:
+-----------------
+1. PROPOSE (Standard)
+   - Keine Geometrie-Änderung
+   - Rückgabe: List[GapRepairProposal]
+   - Jede Proposal enthält:
+     * gap_id, proposed_geometry, confidence, width_mm
+     * manual_review_required (True wenn >50mm)
+
+2. REPAIR_AND_MARK
+   - Repariert Gaps automatisch
+   - Markiert reparierte Wände im IFC mit PropertySet "Bimify_GapRepair"
+   - PropertySet enthält:
+     * IsArtificiallyClosed: True
+     * OriginalGapWidth_mm: float
+     * ClosureConfidence: float
+     * ManualReviewRequired: bool
+
+3. SILENT_REPAIR (Legacy)
+   - Repariert Gaps ohne Markierung
+   - Keine Transparenz über künstliche Geometrie
+
+EXPORT-BLOCKIERUNG BEI KRITISCHEN GAPS:
+----------------------------------------
+Kritischer Fix für baurechtliche Gültigkeit:
+- Export wird blockiert wenn Gaps >50mm existieren
+- Gilt für PROPOSE und REPAIR_AND_MARK Modi
+- IFCExportBlockedError wird geworfen
+- BIM-Compliance-Anforderung: Gaps ≤50mm
+
+Implementierung:
+```python
+critical_gaps = [g for g in gaps_found if g[2] > 50.0]
+
+if critical_gaps and gap_mode in (GapClosureMode.REPAIR_AND_MARK, GapClosureMode.PROPOSE):
+    raise IFCExportBlockedError(
+        f"Export blockiert: {len(critical_gaps)} kritische Gaps >50mm gefunden. "
+        f"Manuelle Review erforderlich."
+    )
+```
+
+Validierungskriterien:
+----------------------
+- Wand-Gaps: Gaps >50mm blockieren Export
+- Wand-Anzahl: Mindestens 1 Wand erforderlich
+- Wandachsen-Anzahl: Sollte ≥ 50% der Wände entsprechen
+- Öffnungs-Zuordnungen: Türen/Fenster sollten Wänden zugeordnet sein
+- Geometrie-Validität: Wandachsen und Räume müssen valide sein
+
+SCHRITT 7: IFC-EXPORT
+----------------------
+Datei: core/ifc/build_ifc43_model_v2.py
+Funktion: write_ifc_v2()
+
+Exportiert rekonstruierte Geometrie zu IFC4-Datei.
+
+IFC-EXPORT-SCHRITTE:
+--------------------
+1. Wand-Erstellung
+   - IfcWallStandardCase
+   - Material-Layer-Set für thermische Berechnungen
+   - Gap-Repair-Markierung (wenn vorhanden)
+
+2. Gap-Repair-Markierung
+   - PropertySet "Bimify_GapRepair" bei reparierten Wänden
+   - Enthält: IsArtificiallyClosed, OriginalGapWidth_mm, ClosureConfidence, ManualReviewRequired
+
+3. Tür-Erstellung
+   - IfcDoor
+   - Zuordnung zu Wänden via spatial index
+
+4. Fenster-Erstellung
+   - IfcWindow
+   - Zuordnung zu Wänden via spatial index
+
+5. Raum-Erstellung
+   - IfcSpace
+   - Floor Covering (IfcCovering) für HottCAD-Kompatibilität
+
+6. Boden-Erstellung
+   - IfcSlab
+   - Äußerer Boundary aus Exterior-Wänden
+
+7. Relationen
+   - IfcRelSpaceBoundary (für HottCAD)
+   - IfcRelConnectsElements (Wand-zu-Wand)
+   - Opening Relations (Türen/Fenster zu Wänden)
+
+PROVENIENZ-TRACKING:
+--------------------
+Kritischer Fix für Rechtssicherheit:
+- IfcOwnerHistory mit Application-Info: "Bimify Pipeline V4.0"
+- PropertySet "Bimify_Provenance" am IfcProject
+- Speichert:
+  * PipelineVersion: "4.0.0"
+  * GeometryFidelity: str (wenn gesetzt)
+  * GapClosureMode: str
+  * PxPerMm: str (wenn bekannt)
+  * ExportedAt: ISO 8601 Timestamp
+
+Implementierung:
+```python
+# In IFCV2Builder.__enter__():
+setup_owner_history_v2(
+    self.model,
+    application_identifier="bimify-pipeline-v4",
+    application_full_name="Bimify Pipeline V4.0",
+    application_version="4.0.0",
+)
+
+# In add_provenance():
+pset = ifcopenshell.api.run("pset.add_pset", self.model, product=self.project, name="Bimify_Provenance")
+ifcopenshell.api.run("pset.edit_pset", self.model, pset=pset, properties={
+    "PipelineVersion": "4.0.0",
+    "GeometryFidelity": str(geometry_fidelity) if geometry_fidelity else None,
+    "GapClosureMode": str(gap_closure_mode),
+    "PxPerMm": str(px_per_mm) if px_per_mm else None,
+    "ExportedAt": datetime.utcnow().isoformat(),
+})
+```
+
+IFC-STRUKTUR:
+-------------
+- IfcProject (mit Bimify_Provenance PropertySet)
+- IfcSite
+- IfcBuilding
+- IfcBuildingStorey
+- IfcWallStandardCase (mit Bimify_GapRepair wenn repariert)
+- IfcDoor
+- IfcWindow
+- IfcSpace
+- IfcSlab
+- IfcCovering
+
+HottCAD-Kompatibilität:
+-----------------------
+- Rechteckige Wand-Footprints
+- Konstante Wanddicke
+- Öffnungs-Relationen
+- Space Boundaries
+- Material-Layer-Sets
+
+SCHRITT 8: VALIDIERUNGSBERICHTE
+--------------------------------
+Datei: core/validate/reconstruction_validation.py
+Funktion: generate_validation_report()
+
+- Pre-Export-Validierung
+- Wandachsen-Qualitäts-Scores
+- Öffnungs-Zuordnungen
+- Gap-Repair-Status
+- JSON-Report mit detaillierten Metriken
+
+SCHRITT 9: TEMPLATE-VERGLEICH
+------------------------------
+Datei: core/ifc/template_analyzer.py
+Funktion: compare_ifc_to_template()
+
+- Units-Vergleich
+- Contexts-Vergleich
+- Spatial Hierarchy
+- Entity Types
+- Property Sets
+
+SCHRITT 10: TOPVIEW-GENERIERUNG
+--------------------------------
+Datei: core/vector/ifc_topview.py
+Funktion: build_topview_geojson()
+
+- Generiert GeoJSON für TopView-Visualisierung
+- Enthält alle IFC-Elemente als GeoJSON-Features
+
+================================================================================
+                    PIPELINE 2: MULTI-MODEL MERGE
+================================================================================
+
+Datei: core/merge/merger.py
+Funktion: merge_models()
+
+Zweck:
+------
+Kombiniert Predictions von 3 Roboflow-Modellen:
+- Model 1 (M1): Topology & Snapping
+- Model 2 (M2): Room Segmentation
+- Model 3 (M3): Clean Geometry & Openings
+
+PRIMARY-ZUWEISUNG:
+------------------
+- M1: Wände (PRIMARY)
+- M2: Räume (PRIMARY)
+- M3: Öffnungen (PRIMARY)
+
+TOPOLOGY-AWARENESS FÜR ÖFFNUNGEN:
+----------------------------------
+Kritischer Fix für Datenverlust-Prävention:
+
+1. M3-Öffnungs-Verarbeitung:
+   - Wenn M3-Öffnung nicht gut auf Wand passt (>20px = ~2cm):
+     * Suche nach besser passender M1-Öffnung für dieselbe Wand
+     * Wenn M1-Öffnung existiert mit distance < 20px und confidence > 0.85:
+       → Verwende M1 statt M3
+
+2. Verwaiste M1-Öffnungen:
+   - Prüfe IOU > 0.5 mit M3-Öffnungen
+   - Nur echte verwaiste Öffnungen werden hinzugefügt
+   - Verhindert Duplikate
+
+Implementierung:
+```python
+# In M3-Öffnungs-Schleife:
+if best_dist > 20.0 and best_wall:  # M3 passt nicht gut
+    # Suche M1-Alternative
+    for m1_opening in m1_openings:
+        m1_dist = calculate_distance_to_wall(m1_opening, best_wall)
+        if m1_dist < 20.0 and m1_opening.confidence > 0.85:
+            # Verwende M1 statt M3
+            merged_openings.append(m1_alternative)
+            continue
+
+# Für verwaiste M1-Öffnungen:
+for m1_opening in m1_openings:
+    is_covered_by_m3 = False
+    for m3_opening in m3_openings:
+        iou = calculate_iou(m1_opening.bbox, m3_opening.bbox)
+        if iou > 0.5:
+            is_covered_by_m3 = True
+            break
+    if not is_covered_by_m3:
+        # Echte verwaiste Öffnung, hinzufügen
+        merged_openings.append(m1_opening)
+```
+
+AUSGABE:
+--------
+CanonicalPlan: Merged Plan im kanonischen JSON-Format
+- walls: List[Wall]
+- openings: List[Opening]
+- rooms: List[Room]
+- metadata: Metadata
+
+================================================================================
+                    KONFIGURATION
+================================================================================
+
+Datei: core/ml/pipeline_config.py
+Klasse: PipelineConfig
+
+Zentrale Konfiguration mit Pydantic-Validierung.
+
+GEOMETRY-FIDELITY-LEVEL:
+------------------------
+Enum: LOSSLESS, HIGH, MEDIUM, LOW
+
+Methode: PipelineConfig.with_fidelity(level: GeometryFidelityLevel)
+
+Mapping:
+- LOSSLESS: simplify_tolerance=0.1mm, grid=0.0 (deaktiviert), angle=0.0, gap_mode=PROPOSE
+- HIGH: simplify_tolerance=2.0mm, grid=2.0mm, angle=5°, gap_mode=PROPOSE
+- MEDIUM: simplify_tolerance=5.0mm, grid=5.0mm, angle=10°, gap_mode=REPAIR_AND_MARK, max_gap=50mm
+- LOW: simplify_tolerance=10.0mm, grid=10.0mm, angle=15°, gap_mode=REPAIR_AND_MARK, max_gap=20mm
+
+GAP-CLOSURE-MODE:
+-----------------
+Enum: PROPOSE, REPAIR_AND_MARK, SILENT_REPAIR
+
+- PROPOSE: Nur Vorschläge, keine Geometrie-Änderung (Standard)
+- REPAIR_AND_MARK: Repariert + markiert im IFC
+- SILENT_REPAIR: Legacy-Verhalten (keine Transparenz)
+
+KONFIGURATIONSPARAMETER:
+------------------------
+Post-Processing:
+- simplify_tolerance_walls: 2.0mm (Standard)
+- simplify_tolerance_doors_windows: 0.5mm (Standard)
+- grid_size_walls: 50.0mm (Standard)
+- grid_size_doors: 10.0mm (Standard)
+- grid_size_windows: 10.0mm (Standard)
+- angle_tolerance: 5.0° (Standard)
+- max_gap_close: 10.0mm (Standard)
+
+Validierung:
+- min_confidence_score: 0.0 (Standard)
+- min_points_wall: 4 (Standard)
+- min_points_door: 3 (Standard)
+- min_points_window: 3 (Standard)
+- max_wall_length_mm: 100000.0mm (Standard)
+- min_wall_length_mm: 100.0mm (Standard)
+- min_room_area_m2: 1.0m² (Standard)
+
+Performance:
+- parallel_processing_threshold: 100 (Standard)
+- skeletonization_max_dimension: 1000 (Standard)
+- skeletonization_target_dpi: 100.0 (Standard)
+- enable_skeletonization_cache: True (Standard)
+
+Feature Flags:
+- enable_snap_to_grid: True (Standard)
+- enable_right_angle: True (Standard)
+- enable_skeletonization: True (Standard)
+- enable_parallel_processing: True (Standard)
+- enable_adaptive_grid: True (Standard)
+- enable_input_validation: True (Standard)
+- enable_geometry_validation: True (Standard)
+- gap_closure_mode: PROPOSE (Standard)
+
+================================================================================
+                    DATENSTRUKTUREN
+================================================================================
+
+RFPred:
+-------
+@dataclass
+class RFPred:
+    doc: int
+    page: int
+    klass: str
+    confidence: float
+    polygon: List[Tuple[float, float]] | None
+    bbox: Tuple[float, float, float, float] | None
+
+NormalizedDet:
+--------------
+@dataclass
+class NormalizedDet:
+    doc: int
+    page: int
+    type: str  # "WALL", "DOOR", "WINDOW", "STAIR"
+    is_external: bool | None
+    geom: Polygon | LineString
+    attrs: Dict
+
+WallAxis:
+---------
+@dataclass
+class WallAxis:
+    detection: NormalizedDet
+    source_index: int
+    axis: LineString
+    width_mm: float
+    length_mm: float
+    centroid_mm: Tuple[float, float]
+    method: str  # "skeletonization", "bounding_box", "centerline_heuristic", "fallback"
+    metadata: Dict | None
+
+GapRepairProposal:
+------------------
+@dataclass
+class GapRepairProposal:
+    gap_id: str
+    proposed_geometry: LineString
+    confidence: float  # 0.0-1.0
+    width_mm: float
+    manual_review_required: bool
+
+PipelineMetrics:
+----------------
+@dataclass
+class PipelineMetrics:
+    total_input_predictions: int
+    valid_input_predictions: int
+    invalid_input_predictions: int
+    filtered_by_confidence: int
+    filtered_by_points: int
+    filtered_by_geometry: int
+    filtered_by_dimensions: int
+    total_processed: int
+    total_walls: int
+    total_doors: int
+    total_windows: int
+    total_spaces: int
+    total_wall_axes: int
+    time_input_validation: float
+    time_post_processing: float
+    time_normalization: float
+    time_reconstruction: float
+    time_ifc_export: float
+    time_validation: float
+    warnings: List[str]
+    errors: List[str]
+
+================================================================================
+                    EXCEPTIONS
+================================================================================
+
+Exception-Hierarchie:
+--------------------
+- BimifyError (Base)
+  * IFCExportError
+    - GeometryValidationError
+    - InsufficientConfidenceError
+    - WallReconstructionError
+    - MaterialAssignmentError
+    - CoordinatePrecisionError
+    - IFCExportBlockedError
+  * ValidationError
+    - IFCValidationError
+      - SchemaValidationError
+  * GeometryError
+    - GeometryProcessingError
+    - GeometryExtractionError
+
+CoordinatePrecisionError:
+-------------------------
+Wird geworfen wenn Koordinaten-Präzisionsverlust > 0.5px erkannt wird.
+Blockiert Export um falsche IFCs zu verhindern.
+
+IFCExportBlockedError:
+----------------------
+Wird geworfen wenn kritische Validierungsprobleme den Export blockieren:
+- Kritische Gaps >50mm
+- Andere BIM-Compliance-Probleme
+
+================================================================================
+                    API-ENDPUNKTE
+================================================================================
+
+POST /api/export-ifc/v2
+-----------------------
+Request: ExportIFCV2Request
+Response: ExportIFCV2Response
+
+- Single-Model IFC Export
+- Unterstützt geometry_fidelity Parameter
+- Unterstützt alle Pipeline-Features
+- Wirft CoordinatePrecisionError bei ungenauem px_per_mm
+- Wirft IFCExportBlockedError bei kritischen Gaps
+
+POST /api/merge-models
+---------------------
+Request: MergeModelsRequest
+Response: MergeModelsResponse
+
+- Multi-Model Merge
+- Topology-Awareness für Öffnungen
+
+================================================================================
+                    DATEI-STRUKTUR
+================================================================================
+
+SINGLE-MODEL PIPELINE:
+----------------------
+services/api/ifc_exporter_v2.py
+├── run_ifc_export_v2()                    # Haupt-Pipeline (Entry Point)
+└── prediction_to_rfpred_v2()              # Konvertierung dict → RFPred
+
+core/ml/pipeline_config.py
+├── PipelineConfig                          # Zentrale Konfiguration
+├── GapClosureMode                          # Gap-Closure-Modi
+└── with_fidelity()                         # GeometryFidelityLevel-Integration
+
+core/ml/postprocess_v2.py
+└── process_roboflow_predictions_v2()      # Post-Processing (Noise-Reduktion)
+
+core/ml/postprocess_floorplan.py
+├── normalize_predictions()                # Normalisierung (Pixel → mm, Klassifizierung)
+│   └── Koordinaten-Präzisions-Gate
+├── estimate_wall_axes_and_thickness()     # Wandachsen-Erstellung (Fallback-Hierarchie)
+├── _is_valid_axis()                      # Achsen-Validierung
+├── _estimate_by_bounding_box()           # Bounding Box Methode
+└── _estimate_by_centerline_heuristic()   # Centerline Heuristic
+
+core/reconstruct/spaces.py
+└── polygonize_spaces_from_walls()         # Raum-Erstellung
+
+core/reconstruct/walls.py
+├── close_wall_gaps()                      # Gap-Closure
+├── post_process_gap_closure()            # Garantierte Gap-Closure
+└── resolve_wall_overlaps()              # Overlap-Resolution
+
+core/validate/input_validation.py
+└── validate_raw_predictions()             # Input-Validierung
+
+core/validate/geometry_validation.py
+└── validate_reconstruction()              # Geometrie-Validierung
+
+core/validate/reconstruction_validation.py
+├── validate_before_ifc_export()          # Pre-Export-Validierung
+│   └── Export-Blockierung bei Gaps >50mm
+├── auto_repair_gaps()                     # Gap-Reparatur (Modi)
+└── GapRepairProposal                     # Gap-Proposal-Dataclass
+
+core/ifc/build_ifc43_model_v2.py
+├── write_ifc_v2()                         # IFC-Export (Wrapper)
+├── _write_ifc_v2_impl()                  # IFC-Export (Implementierung)
+├── _process_walls()                       # Wand-Verarbeitung (Gap-Repair-Markierung)
+├── _process_doors()                       # Tür-Verarbeitung
+├── _process_windows()                      # Fenster-Verarbeitung
+├── _process_spaces()                      # Raum-Verarbeitung
+├── _process_floor()                       # Boden-Verarbeitung
+├── add_provenance()                       # Provenienz-Tracking
+└── IFCV2Builder                           # IFC-Modell-Builder-Klasse
+
+MULTI-MODEL MERGE:
+------------------
+core/merge/merger.py
+└── merge_models()                         # 3-Model Merge
+    └── Topology-Awareness für Öffnungen
+
+VALIDATION:
+-----------
+core/validate/ifc_compliance.py
+└── validate_ifc_compliance()              # IFC-Compliance-Check
+
+core/ifc/template_analyzer.py
+├── analyze_ifc_template()                # Template-Analyse
+└── compare_ifc_to_template()             # Template-Vergleich
+
+METRICS:
+--------
+core/metrics/pipeline_metrics.py
+└── PipelineMetrics                         # Metriken-Sammlung
+
+EXCEPTIONS:
+-----------
+core/exceptions.py
+├── CoordinatePrecisionError
+└── IFCExportBlockedError
+
+================================================================================
+                    WICHTIGE HINWEISE
+================================================================================
+
+1. GEOMETRY-FIDELITY-LEVEL
+---------------------------
+- Standard: None (Legacy-Verhalten)
+- Empfohlen: MEDIUM für Produktion
+- LOSSLESS nur für Auditing/Debugging
+- HIGH für präzise Pläne
+- LOW für schnelle Voransicht
+
+2. GAP-CLOSURE-MODE
+--------------------
+- Standard: PROPOSE (keine automatische Reparatur)
+- REPAIR_AND_MARK: Repariert und markiert im IFC
+- SILENT_REPAIR: Legacy-Verhalten (RISIKO: Keine Transparenz)
+- WICHTIG: Export wird bei Gaps >50mm blockiert (BIM-Compliance)
+
+3. SKELETONIZATION-FALLBACK
+----------------------------
+- Automatischer Fallback bei Fehlschlägen
+- Methoden-Hierarchie: Skeletonization → Bounding Box → Centerline → Legacy
+- Jede Methode validiert ihr Ergebnis
+- Logging bei Fallback-Verwendung
+
+4. KOORDINATEN-PRÄZISION
+-------------------------
+- Präzisions-Gate blockiert Export bei Fehler >0.5px
+- Verhindert akkumulierte Rundungsfehler
+- HottCAD-kompatibel (0.5mm Toleranz)
+- Warnung bei Fehler >0.1px
+
+5. PROVENIENZ-TRACKING
+----------------------
+- Jede IFC-Datei enthält vollständige Audit-Informationen
+- PropertySet "Bimify_Provenance" am IfcProject
+- IfcOwnerHistory mit Application-Info
+- Rechtssicherheit bei Streitfällen
+
+6. MULTI-MODEL MERGE
+---------------------
+- Topology-Awareness: M1 bevorzugt wenn M3 nicht passt
+- IOU-Prüfung verhindert Duplikate
+- Kein Datenverlust mehr bei verwaisten M1-Öffnungen
+
+================================================================================
+                    ENDE DER DOKUMENTATION
+================================================================================

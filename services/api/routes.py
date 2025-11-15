@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gc
 import json
 import os
 import tempfile
@@ -37,9 +38,20 @@ from core.vector.pdf_export import PDFExportOptions, generate_vector_pdf
 from pydantic import ValidationError
 
 from services.api.ifc_exporter import run_ifc_export, prediction_to_rfpred
-from services.api.ifc_repair import RepairError, run_ifc_repair
-from services.api.ifc_job_runner import process_ifc_job_async
+from services.api.ifc_exporter_v2 import run_ifc_export_v2
+from services.api.ifc_repair import run_ifc_repair
+from core.exceptions import (
+    IFCExportError,
+    GeometryError,
+    RepairError,
+    JobNotFoundError,
+    FileNotFoundError as BimifyFileNotFoundError,
+    RoboflowAPIError,
+    MLInferenceError,
+)
+from services.api.ifc_job_runner import process_ifc_job_async, process_ifc_v2_job_async, process_repair_job_async
 from services.api.jobs_store import FileJobStore
+from services.api.utils import _resolve_model
 from services.api.schemas import (
     AnalyzeOptions,
     AnalyzeResponse,
@@ -51,6 +63,9 @@ from services.api.schemas import (
     JobStatusResponse,
     IFCTopViewRequest,
     IFCTopViewResponse,
+    IFCRepairPreviewRequest,
+    IFCRepairPreviewResponse,
+    IFCRepairCommitRequest,
     HottCADCheckOut,
     HottCADCompletenessOut,
     HottCADConnectionOut,
@@ -70,6 +85,9 @@ from services.api.schemas import (
     ZoneCount,
     IFCRepairRequest,
     IFCRepairResponse,
+    ExportIFCV2Request,
+    ExportIFCV2Response,
+    ExportIFCV2JobResponse,
 )
 
 
@@ -79,6 +97,7 @@ router = APIRouter(prefix="/v1")
 DATA_ROOT = Path("data")
 JOB_ROOT = DATA_ROOT / "jobs"
 EXPORT_ROOT = DATA_ROOT / "exports"
+PREVIEW_ROOT = DATA_ROOT / "previews"
 SETTINGS_PATH = DATA_ROOT / "settings.json"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 
@@ -173,20 +192,6 @@ def _load_server_settings() -> dict[str, Any]:
     return {}
 
 
-def _project_id_only(value: str) -> str:
-    parts = [segment for segment in (value or "").split("/") if segment]
-    return parts[-1] if parts else value
-
-
-def _resolve_model() -> tuple[str, int]:
-    settings = get_settings()
-    stored = _load_server_settings()
-    project_raw = stored.get("roboflow_project") or settings.roboflow.project
-    project = _project_id_only(project_raw)
-    version = stored.get("roboflow_version") or settings.roboflow.version
-    return str(project), int(version)
-
-
 def _normalize_relative_path(path_str: str) -> Path:
     cleaned = (path_str or "").replace("\\", "/")
     pure = PurePosixPath(cleaned)
@@ -244,7 +249,7 @@ def _resolve_ifc_from_job(job_id: str) -> Path:
     store = FileJobStore(JOB_ROOT)
     job = store.load(job_uuid)
     if not job:
-        raise HTTPException(status_code=404, detail="Job nicht gefunden")
+        raise JobNotFoundError(f"Job {job_id} nicht gefunden", {"job_id": job_id})
 
     job_meta = job.meta or {}
     ifc_meta = job_meta.get("ifc") or {}
@@ -260,14 +265,14 @@ def _resolve_ifc_from_job(job_id: str) -> Path:
     if fallback.exists():
         return fallback
 
-    raise HTTPException(status_code=404, detail="Keine verbesserte (xBIM) IFC-Datei im Job gefunden")
+    raise BimifyFileNotFoundError("Keine verbesserte (xBIM) IFC-Datei im Job gefunden", {"job_id": job_id})
 
 
 def _resolve_ifc_source(ifc_url: str | None, job_id: str | None) -> tuple[Path, bool]:
     if ifc_url:
         path, cleanup = _resolve_ifc_from_url(ifc_url)
         if not path.exists():
-            raise HTTPException(status_code=404, detail="IFC-Datei nicht gefunden")
+            raise BimifyFileNotFoundError("IFC-Datei nicht gefunden", {"ifc_url": ifc_url})
         return path, cleanup
     if job_id:
         path = _resolve_ifc_from_job(job_id)
@@ -434,22 +439,51 @@ async def analyze_image(
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".png") as tmp:
         tmp.write(payload)
         temp_path = Path(tmp.name)
+    
+    # Free payload memory early - we don't need it after writing to temp file
+    del payload
 
-    project, version = _resolve_model()
+    model_cfg = _resolve_model(getattr(analyze_opts, "model_kind", None))
+    project = model_cfg.project
+    version = model_cfg.version
+
+    confidence_value = (
+        float(analyze_opts.confidence)
+        if getattr(analyze_opts, "confidence", None) is not None
+        else float(model_cfg.confidence or 0.01)
+    )
+    overlap_value = (
+        float(analyze_opts.overlap)
+        if getattr(analyze_opts, "overlap", None) is not None
+        else float(model_cfg.overlap or 0.3)
+    )
+    per_class_thresholds = analyze_opts.per_class_thresholds or None
+
     rf_opts = RFOptions(
         project=project,
         version=version,
-        confidence=float(analyze_opts.confidence),
-        overlap=float(analyze_opts.overlap),
-        per_class=analyze_opts.per_class_thresholds or None,
+        confidence=confidence_value,
+        overlap=overlap_value,
+        per_class=per_class_thresholds,
     )
+
+    # Ensure API key from settings.json is used if env var is not set
+    stored = _load_server_settings()
+    api_key_override = stored.get("roboflow_api_key")
+    if api_key_override:
+        api_key_override = str(api_key_override).strip()
+        if api_key_override:
+            # Set in environment for this process
+            os.environ["ROBOFLOW_API_KEY"] = api_key_override
 
     raw: dict[str, Any] = {}
     try:
         try:
-            _, raw = await infer_floorplan_with_raw(temp_path, opts=rf_opts)
+            _, raw = await infer_floorplan_with_raw(temp_path, opts=rf_opts, api_key_override=api_key_override)
+        except (RoboflowAPIError, MLInferenceError) as exc:
+            raise
         except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise RoboflowAPIError(f"Roboflow inference failed: {exc}") from exc
     finally:
         try:
             temp_path.unlink(missing_ok=True)
@@ -462,6 +496,7 @@ async def analyze_image(
         detections = sv.Detections.empty()
     labels = [str(item.get("class") or "") for item in raw.get("predictions", [])]
     annotated_b64: str | None = None
+    annotated_scene = None
     try:
         annotated_scene = frame.copy()
         mask_annotator = sv.MaskAnnotator()
@@ -478,8 +513,18 @@ async def analyze_image(
         success, buffer = cv2.imencode(".png", annotated_scene)
         if success:
             annotated_b64 = base64.b64encode(buffer.tobytes()).decode("ascii")
+        # Explicitly free buffer memory
+        del buffer
     except Exception:
         annotated_b64 = None
+    finally:
+        # Explicitly free OpenCV image memory
+        if annotated_scene is not None:
+            del annotated_scene
+        if frame is not None:
+            del frame
+        # Force garbage collection to free memory immediately
+        gc.collect()
 
     predictions_out = []
     per_class: dict[str, int] = {}
@@ -684,16 +729,14 @@ async def export_ifc(payload: ExportIFCRequest) -> ExportIFCResponse:
 
     try:
         return await run_ifc_export(payload)
+    except (IFCExportError, GeometryError) as exc:
+        # These will be handled by the exception handler
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - defensive logging
         logger.exception("Unerwarteter Fehler beim IFC-Export")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unerwarteter Fehler beim IFC-Export: {type(exc).__name__}: {exc}",
-        ) from exc
+        raise IFCExportError(f"Unerwarteter Fehler beim IFC-Export: {type(exc).__name__}: {exc}") from exc
 
 
 @router.post("/export-ifc/async", response_model=ExportIFCJobResponse, tags=["ifc"])
@@ -725,22 +768,138 @@ async def export_ifc_async(payload: ExportIFCRequest) -> ExportIFCJobResponse:
     return ExportIFCJobResponse(job_id=str(job.id))
 
 
+@router.post("/export-ifc/v2/async", response_model=ExportIFCV2JobResponse, tags=["ifc"])
+async def export_ifc_v2_async(payload: ExportIFCV2Request) -> ExportIFCV2JobResponse:
+    """
+    IFC Export V2 Endpoint.
+    
+    Uses post-processing pipeline to clean predictions before IFC export.
+    
+    Request Parameters:
+    - predictions: List of validated Roboflow predictions (required, min_length=1)
+    - storey_height_mm: Storey height in millimeters (required, > 0)
+    - door_height_mm: Door height in millimeters (required, > 0)
+    - window_height_mm: Window height in millimeters (optional, > 0)
+    - window_head_elevation_mm: Window head elevation in millimeters (optional, > 0)
+    - floor_thickness_mm: Floor thickness in millimeters (default: 200.0, > 0)
+    - px_per_mm: Pixels per millimeter for calibration (optional, > 0)
+    - project_name: Project name (optional, sanitized for path safety)
+    - storey_name: Storey name (optional, defaults to "EG")
+    - calibration: Calibration payload (optional)
+    - flip_y: Flip Y coordinate (optional)
+    - image_height_px: Image height in pixels (optional, > 0)
+    - geometry_fidelity: Geometry fidelity level - LOSSLESS, HIGH, MEDIUM, LOW (optional)
+    - preserve_exact_geometry: Preserve exact geometry instead of simplifying (default: True)
+    - min_wall_thickness_mm: Minimum wall thickness in mm to filter noise (default: 50.0, >= 0)
+    - confidence_threshold: Minimum confidence score 0.0-1.0 for predictions (default: 0.40, >= 0, <= 1)
+    
+    Returns:
+    - job_id: UUID of the created export job
+    """
+    if not payload.predictions:
+        raise HTTPException(status_code=400, detail="Keine Vorhersagen für den IFC-Export V2 vorhanden")
+
+    jobs = FileJobStore(JOB_ROOT)
+    payload_dict = payload.model_dump(mode="json")
+    job = jobs.create(
+        meta={
+            "type": "export_ifc_v2",  # V2 job type
+            "export_ifc_v2": {  # V2-specific meta
+                "payload": payload_dict,
+            },
+        }
+    )
+    logger.info("[export-ifc-v2-async] Job %s erstellt (%d predictions)", job.id, len(payload.predictions))
+
+    if not _dispatch_ifc_v2_job(job.id):
+        async def _run_local_v2() -> None:
+            logger.info("[export-ifc-v2-async] Background-Task für Job %s gestartet", job.id)
+            try:
+                await process_ifc_v2_job_async(job.id)
+                logger.info("[export-ifc-v2-async] Background-Task für Job %s erfolgreich abgeschlossen", job.id)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.exception(
+                    "[export-ifc-v2-async] Background-Task für Job %s fehlgeschlagen: %s",
+                    job.id,
+                    exc,
+                    exc_info=True,
+                )
+
+        logger.info("[export-ifc-v2-async] Starte Background-Task für Job %s", job.id)
+        task = asyncio.create_task(_run_local_v2())
+        logger.debug("[export-ifc-v2-async] Background-Task %s für Job %s erstellt", task.get_name() if hasattr(task, 'get_name') else 'unknown', job.id)
+
+    return ExportIFCV2JobResponse(job_id=str(job.id))
+
+
+def _dispatch_ifc_v2_job(job_id: UUID) -> bool:
+    """Dispatch IFC export V2 job to Celery worker (if configured)."""
+    broker_url = os.getenv("CELERY_BROKER_URL")
+    if not broker_url:
+        return False
+    try:
+        # TODO: Create V2-specific Celery task if needed
+        # from services.worker.tasks.export_ifc_v2_payload import export_ifc_v2_payload
+        # export_ifc_v2_payload.delay(str(job_id))
+        logger.info("[export-ifc-v2-async] V2 Job %s - Celery dispatch not yet implemented", job_id)
+        return False
+    except Exception as exc:  # pragma: no cover - celery misconfiguration
+        logger.warning("[export-ifc-v2-async] V2 Celery-Dispatch fehlgeschlagen: %s", exc)
+        return False
+
+
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse, tags=["jobs"])
 async def get_job_status(job_id: UUID) -> JobStatusResponse:
+    logger.debug("[get-job-status] Job-Status abgerufen für Job %s", job_id)
     jobs = FileJobStore(JOB_ROOT)
     job = jobs.load(job_id)
     if not job:
+        logger.warning("[get-job-status] Job %s nicht gefunden", job_id)
         raise HTTPException(status_code=404, detail="Job nicht gefunden")
 
+    logger.debug("[get-job-status] Job %s geladen: Status=%s, Progress=%d", job_id, job.status, job.progress)
     meta = job.meta or {}
-    export_meta = meta.get("export_ifc") or {}
-    result_payload = export_meta.get("result")
-    result_model: ExportIFCResponse | None = None
-    if isinstance(result_payload, Mapping):
-        try:
-            result_model = ExportIFCResponse.model_validate(result_payload)
-        except ValidationError as exc:
-            logger.warning("[export-ifc-async] Ergebnis konnte nicht geladen werden (%s): %s", job_id, exc)
+    result_model = None
+
+    # Export-IFC Ergebnis
+    if "export_ifc" in meta:
+        export_meta = meta.get("export_ifc") or {}
+        result_payload = export_meta.get("result")
+        if isinstance(result_payload, Mapping):
+            try:
+                result_model = ExportIFCResponse.model_validate(result_payload)
+            except ValidationError as exc:
+                logger.warning("[export-ifc-async] Ergebnis konnte nicht geladen werden (%s): %s", job_id, exc)
+
+    # Export-IFC-V2 Ergebnis - NEW IMPLEMENTATION
+    if result_model is None and "export_ifc_v2" in meta:
+        export_v2_meta = meta.get("export_ifc_v2") or {}
+        result_payload = export_v2_meta.get("result")
+        if isinstance(result_payload, Mapping):
+            try:
+                result_model = ExportIFCV2Response.model_validate(result_payload)
+            except ValidationError as exc:
+                logger.warning("[export-ifc-v2-async] V2 Ergebnis konnte nicht geladen werden (%s): %s", job_id, exc)
+
+    # Repair-IFC Ergebnis
+    if result_model is None and "repair_ifc" in meta:
+        repair_meta = meta.get("repair_ifc") or {}
+        result_payload = repair_meta.get("result")
+        if isinstance(result_payload, Mapping):
+            try:
+                result_model = IFCRepairResponse.model_validate(result_payload)
+            except ValidationError as exc:
+                logger.warning("[repair-ifc-async] Ergebnis konnte nicht geladen werden (%s): %s", job_id, exc)
+
+    # Repair-Preview Ergebnis
+    if result_model is None and "repair_preview" in meta:
+        preview_meta = meta.get("repair_preview") or {}
+        result_payload = preview_meta.get("result")
+        if isinstance(result_payload, Mapping):
+            try:
+                result_model = IFCRepairPreviewResponse.model_validate(result_payload)
+            except ValidationError as exc:
+                logger.warning("[repair-preview-async] Ergebnis konnte nicht geladen werden (%s): %s", job_id, exc)
 
     error_value = meta.get("error")
     if isinstance(error_value, (dict, list)):
@@ -749,6 +908,15 @@ async def get_job_status(job_id: UUID) -> JobStatusResponse:
         error_text = str(error_value)
     else:
         error_text = None
+
+    logger.debug(
+        "[get-job-status] Job %s Status-Response: Status=%s, Progress=%d, HasResult=%s, HasError=%s",
+        job_id,
+        job.status,
+        int(job.progress or 0),
+        result_model is not None,
+        error_text is not None,
+    )
 
     return JobStatusResponse(
         id=str(job.id),
@@ -793,7 +961,7 @@ async def ifc_topview(payload: IFCTopViewRequest) -> IFCTopViewResponse:
 
     if needs_refresh or not out_path.exists():
         try:
-            build_topview_geojson(ifc_path, out_path, section_elevation_mm=payload.section_elevation_mm)
+            await asyncio.to_thread(build_topview_geojson, ifc_path, out_path, section_elevation_mm=payload.section_elevation_mm)
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail=f"IFC-Datei {ifc_path.name} nicht gefunden")
         except Exception as exc:  # pragma: no cover - shapely/ifcopenshell failures
@@ -831,19 +999,17 @@ async def ifc_repair(payload: IFCRepairRequest) -> IFCRepairResponse:
         raise HTTPException(status_code=400, detail="Ungültiger IFC-Pfad")
 
     try:
-        repaired_path, warnings = run_ifc_repair(source_path, level=payload.level, export_root=export_root)
+        repaired_path, warnings = await asyncio.to_thread(run_ifc_repair, source_path, level=payload.level, export_root=export_root)
     except RepairError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Will be handled by exception handler
+        raise
     except Exception as exc:  # pragma: no cover - defensive logging
         logger.exception("IFC-Reparatur fehlgeschlagen")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Reparatur fehlgeschlagen: {type(exc).__name__}: {exc}",
-        ) from exc
+        raise RepairError(f"Reparatur fehlgeschlagen: {type(exc).__name__}: {exc}", {"source_path": str(source_path)}) from exc
 
     topview_path = repaired_path.with_name(f"{repaired_path.stem}_topview.geojson")
     try:
-        build_topview_geojson(repaired_path, topview_path, section_elevation_mm=None)
+        await asyncio.to_thread(build_topview_geojson, repaired_path, topview_path, section_elevation_mm=None)
         topview_url = f"/files/{topview_path.name}"
     except Exception:
         logger.warning("TopView für reparierte IFC konnte nicht erstellt werden", exc_info=True)
@@ -856,6 +1022,31 @@ async def ifc_repair(payload: IFCRepairRequest) -> IFCRepairResponse:
         topview_url=topview_url,
         warnings=warnings or None,
     )
+
+
+@router.post("/ifc/repair/async", response_model=ExportIFCJobResponse, tags=["ifc"])
+async def ifc_repair_async(payload: IFCRepairRequest) -> ExportIFCJobResponse:
+    # Wir erzeugen einen Job und starten die Reparatur im Hintergrund
+    jobs = FileJobStore(JOB_ROOT)
+    payload_dict = payload.model_dump(mode="json")
+    job = jobs.create(
+        meta={
+            "type": "repair_ifc",
+            "repair_ifc": {
+                "payload": payload_dict,
+            },
+        }
+    )
+    logger.info("[repair-ifc-async] Job %s erstellt", job.id)
+
+    async def _run_local() -> None:
+        try:
+            await process_repair_job_async(job.id)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.exception("[repair-ifc-async] Fallback-Job %s fehlgeschlagen: %s", job.id, exc)
+
+    asyncio.create_task(_run_local())
+    return ExportIFCJobResponse(job_id=str(job.id))
 
 
 @router.post("/export-pdf", response_model=ExportPDFResponse, tags=["export"])
@@ -895,4 +1086,244 @@ async def export_pdf(payload: ExportPDFRequest) -> ExportPDFResponse:
         file_name=file_name,
         warnings=warnings or None,
     )
+
+
+# -------- Repair Preview & Commit --------
+@router.post("/ifc/repair/preview/async", response_model=ExportIFCJobResponse, tags=["ifc"])
+async def ifc_repair_preview_async(payload: IFCRepairPreviewRequest) -> ExportIFCJobResponse:
+    """Erstellt einen Job für die Preview-Erstellung im Hintergrund."""
+    jobs = FileJobStore(JOB_ROOT)
+    payload_dict = payload.model_dump(mode="json")
+    job = jobs.create(
+        meta={
+            "type": "repair_preview",
+            "repair_preview": {
+                "payload": payload_dict,
+            },
+        }
+    )
+    logger.info("[repair-preview-async] Job %s erstellt", job.id)
+
+    async def _run_local() -> None:
+        try:
+            from services.api.ifc_job_runner import process_repair_preview_job_async
+            await process_repair_preview_job_async(job.id)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.exception("[repair-preview-async] Job %s fehlgeschlagen: %s", job.id, exc)
+
+    asyncio.create_task(_run_local())
+    return ExportIFCJobResponse(job_id=str(job.id))
+
+
+@router.post("/ifc/repair/preview", response_model=IFCRepairPreviewResponse, tags=["ifc"])
+async def ifc_repair_preview(payload: IFCRepairPreviewRequest) -> IFCRepairPreviewResponse:
+    # Resolve IFC source from file_name or ifc_url
+    file_name = payload.file_name
+    if not file_name and payload.ifc_url:
+        parsed = urlparse(payload.ifc_url)
+        path_part = parsed.path or payload.ifc_url
+        file_name = PurePosixPath(path_part).name
+
+    if not file_name:
+        raise HTTPException(status_code=400, detail="file_name oder ifc_url muss gesetzt sein (Preview)")
+
+    try:
+        source_path = (EXPORT_ROOT / file_name).resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"IFC-Datei {file_name} nicht gefunden") from exc
+
+    export_root = EXPORT_ROOT.resolve()
+    if export_root not in source_path.parents:
+        raise HTTPException(status_code=400, detail="Ungültiger IFC-Pfad")
+    
+    # Estimate processing time based on file size
+    try:
+        file_size_mb = source_path.stat().st_size / (1024 * 1024)
+        # Rough estimate: ~5-10 seconds per MB for topview generation
+        estimated_seconds = max(5, min(120, int(file_size_mb * 8)))
+        logger.info("Preview: IFC-Datei %s ist %.2f MB, geschätzte Zeit: ~%d Sekunden", file_name, file_size_mb, estimated_seconds)
+    except OSError:
+        estimated_seconds = 30  # Default estimate
+        logger.warning("Preview: Konnte Dateigröße nicht ermitteln, verwende Standard-Schätzung")
+
+    # Build normalized detections and axes (with optional image refinement)
+    try:
+        from services.api.ifc_repair import build_preview_axes  # type: ignore
+
+        image_bgr = None
+        px_per_mm_val = None
+        if payload.image_url:
+            try:
+                with urlopen(payload.image_url) as resp:
+                    data = resp.read()
+                    image_bgr = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+            except Exception as img_exc:
+                logger.warning("Preview: Bild konnte nicht geladen werden: %s", img_exc)
+                image_bgr = None
+        logger.info("Preview: Starte build_preview_axes für %s", source_path.name)
+        normalized, axes = await asyncio.to_thread(build_preview_axes, source_path, px_per_mm=px_per_mm_val, image_bgr=image_bgr, rf_norm=None)
+        logger.info("Preview: build_preview_axes abgeschlossen - normalized: %d, axes: %d", len(normalized), len(axes))
+    except FileNotFoundError as exc:
+        logger.exception("Preview: IFC-Datei nicht gefunden")
+        raise HTTPException(status_code=404, detail=f"IFC-Datei nicht gefunden: {exc}") from exc
+    except Exception as exc:
+        error_type = type(exc).__name__
+        error_msg = str(exc)
+        logger.exception("Preview: Pipeline konnte nicht ausgeführt werden (%s: %s)", error_type, error_msg)
+        if "Keine verwertbare Geometrie" in error_msg or "RepairError" in error_type:
+            raise HTTPException(status_code=400, detail=f"IFC-Datei enthält keine verwertbare Geometrie: {error_msg}") from exc
+        raise HTTPException(status_code=500, detail=f"Preview fehlgeschlagen ({error_type}): {error_msg}") from exc
+
+    # Build overlay GeoJSON (axes + walls)
+    try:
+        from core.reports.overlay_builder import build_overlay, write_overlay
+
+        # Validate that we have data to work with
+        if not normalized:
+            raise HTTPException(status_code=400, detail="Keine normalisierte Geometrie gefunden - IFC-Datei enthält möglicherweise keine Wände")
+        if not axes:
+            logger.warning("Preview: Keine Achsen gefunden, aber normalized vorhanden (%d Elemente)", len(normalized))
+        
+        logger.info("Preview: Erstelle Overlay mit %d normalized, %d axes", len(normalized), len(axes))
+        artifacts = build_overlay(normalized=normalized, axes=axes)
+        
+        # Validate overlay was created successfully
+        if not artifacts or not artifacts.overlay:
+            raise HTTPException(status_code=500, detail="Overlay konnte nicht erstellt werden")
+        
+        feature_count = len(artifacts.overlay.get("features", []))
+        logger.info("Preview: Overlay erstellt mit %d Features", feature_count)
+        
+        PREVIEW_ROOT.mkdir(parents=True, exist_ok=True)
+        EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
+        preview_id = str(UUID(int=int(time.time() * 1e6)))  # time-based pseudo-UUID
+        # Save overlay to EXPORT_ROOT so it can be served via /files endpoint
+        overlay_path = EXPORT_ROOT / f"repair_preview_{preview_id}.geojson"
+        write_overlay(artifacts, overlay_path)
+        
+        # Validate file was written successfully
+        if not overlay_path.exists():
+            raise HTTPException(status_code=500, detail=f"Overlay-Datei konnte nicht geschrieben werden: {overlay_path}")
+        file_size = overlay_path.stat().st_size
+        logger.info("Preview: Overlay-Datei geschrieben: %s (%d bytes)", overlay_path.name, file_size)
+
+        # Persist minimal preview meta
+        meta = {
+            "source_file": source_path.name,
+            "level": int(payload.level or 1),
+        }
+        (PREVIEW_ROOT / f"{preview_id}.json").write_text(json.dumps(meta), encoding="utf-8")
+
+        # Optional: propose topview (same as current for preview)
+        proposed_topview_url: str | None = None
+        try:
+            topview_path = source_path.with_name(f"{source_path.stem}_topview.geojson")
+            if not topview_path.exists():
+                await asyncio.to_thread(build_topview_geojson, source_path, topview_path, section_elevation_mm=None)
+            proposed_topview_url = f"/files/{topview_path.name}"
+        except Exception:
+            proposed_topview_url = None
+
+        metrics = artifacts.metrics
+        overlay_url = f"/files/{overlay_path.name}"
+        
+        # Ensure overlay_url is always set, even if empty
+        if not overlay_url:
+            logger.warning("Preview: overlay_url ist leer, setze Standard-URL")
+            overlay_url = f"/files/{overlay_path.name}"
+        
+        # Validate metrics exist
+        if not metrics:
+            metrics = {
+                "total_walls_src": 0,
+                "total_axes": 0,
+                "median_iou": 0.0,
+            }
+        
+        logger.info("Preview: Response vorbereitet - overlay_url: %s, features: %d", overlay_url, feature_count)
+        return IFCRepairPreviewResponse(
+            preview_id=preview_id,
+            level=payload.level,
+            overlay_url=overlay_url,
+            heatmap_url=None,
+            proposed_topview_url=proposed_topview_url,
+            metrics=metrics,
+            warnings=None,
+            estimated_seconds=estimated_seconds,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Preview: Overlay-Erstellung fehlgeschlagen")
+        raise HTTPException(status_code=500, detail=f"Preview fehlgeschlagen (Overlay): {exc}") from exc
+
+
+@router.post("/ifc/repair/commit", response_model=IFCRepairResponse, tags=["ifc"])
+async def ifc_repair_commit(payload: IFCRepairCommitRequest) -> IFCRepairResponse:
+    # If a preview exists, use its meta to resolve the IFC source
+    source_file: str | None = None
+    if payload.preview_id:
+        try:
+            meta_path = (PREVIEW_ROOT / f"{payload.preview_id}.json").resolve(strict=True)
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            source_file = str(meta.get("source_file"))
+            if not source_file:
+                raise ValueError("Preview-Metadaten unvollständig")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Ungültige Preview-ID: {exc}") from exc
+
+    level = int(payload.level or 1)
+
+    if source_file:
+        try:
+            source_path = (EXPORT_ROOT / source_file).resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"IFC-Datei {source_file} nicht gefunden") from exc
+    else:
+        # Fallback: same resolution logic as standard repair
+        file_name = payload.file_name
+        if not file_name and payload.ifc_url:
+            parsed = urlparse(payload.ifc_url)
+            path_part = parsed.path or payload.ifc_url
+            file_name = PurePosixPath(path_part).name
+        if not file_name:
+            raise HTTPException(status_code=400, detail="preview_id oder file_name/ifc_url muss gesetzt sein (Commit)")
+        try:
+            source_path = (EXPORT_ROOT / file_name).resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"IFC-Datei {file_name} nicht gefunden") from exc
+
+    try:
+        export_root = EXPORT_ROOT.resolve()
+    except FileNotFoundError:
+        export_root = EXPORT_ROOT
+
+    if export_root not in source_path.parents:
+        raise HTTPException(status_code=400, detail="Ungültiger IFC-Pfad")
+
+    # For now: delegate to run_ifc_repair (final-fit integrated inside repair pipeline)
+    try:
+        repaired_path, warnings = await asyncio.to_thread(run_ifc_repair, source_path, level=level, export_root=export_root)
+    except RepairError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("IFC-Reparatur (Commit) fehlgeschlagen")
+        raise HTTPException(status_code=500, detail=f"Reparatur fehlgeschlagen: {type(exc).__name__}: {exc}") from exc
+
+    topview_path = repaired_path.with_name(f"{repaired_path.stem}_topview.geojson")
+    try:
+        await asyncio.to_thread(build_topview_geojson, repaired_path, topview_path, section_elevation_mm=None)
+        topview_url = f"/files/{topview_path.name}"
+    except Exception:
+        logger.warning("TopView für reparierte IFC (Commit) konnte nicht erstellt werden", exc_info=True)
+        topview_url = None
+
+    return IFCRepairResponse(
+        file_name=repaired_path.name,
+        ifc_url=f"/files/{repaired_path.name}",
+        level=level,
+        topview_url=topview_url,
+        warnings=warnings or None,
+    )
+
 

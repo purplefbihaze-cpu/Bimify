@@ -1,1 +1,1 @@
-{"roboflow_api_key": "16Bh0Mu8E6ftNYw7h6zH", "roboflow_project": "doxle-fmcyk/floor-plan-ts7cp", "roboflow_version": 31, "matrix_enabled": true, "matrix_speed": 0.05, "matrix_density": 1.15, "matrix_opacity": 0.13, "matrix_color": "#00ff41"}
+{"roboflow_api_key": "16Bh0Mu8E6ftNYw7h6zH", "roboflow_project": "doxle-fmcyk/floor-plan-ts7cp", "roboflow_version": 31, "matrix_enabled": true, "matrix_speed": 0.07, "matrix_density": 0.65, "matrix_opacity": 0.35, "matrix_color": "#00ff41"}

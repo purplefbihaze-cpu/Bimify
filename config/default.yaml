@@ -10,6 +10,23 @@ roboflow:
     window: 0.01
   api_url: https://serverless.roboflow.com
   api_key_env: ROBOFLOW_API_KEY
+  models:
+    geometry:
+      project: doxle-fmcyk/floor-plan-ts7cp
+      version: 31
+      confidence: 0.01
+      overlap: 0.3
+      per_class_thresholds:
+        internal_wall: 0.01
+        external_wall: 0.01
+        door: 0.01
+        window: 0.01
+    rooms:
+      project: floor-plans-zeb7z
+      version: 8
+    verification:
+      project: cubicasa5k-2-qpmsa
+      version: 6
 
 preprocess:
   dpi: 400
@@ -17,7 +34,7 @@ preprocess:
 ## xBIM preprocess removed
 
 ifc:
-  schema: IFC4
+  schema: IFC2X3
   unit: mm
   storey_zero_name: EG
   wall_thickness_standards_mm:
@@ -26,6 +43,14 @@ ifc:
     - 300
     - 400
     - 500
+  owner_org_name: BIMMATRIX
+  owner_org_identification: null
+  app_identifier: BIMMATRIX
+  app_full_name: BIMMATRIX IFC Exporter
+  app_version: "1.0"
+  person_identification: null
+  person_given_name: BIMMATRIX
+  person_family_name: User
 
 storage:
   bucket: bimify

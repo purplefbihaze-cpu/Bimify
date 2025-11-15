@@ -32,15 +32,40 @@ venv/
 .env
 .env.*
 
+# Python virtual environment directories (Windows)
+Lib/
+Scripts/
+Include/
+pyvenv.cfg
+
 # Test & cache
 .pytest_cache/
 .mypy_cache/
 .cache/
 
 # IFC / artifacts
-exports/
-*.ifc
+# Note: *.ifc files are tracked with Git LFS (see .gitattributes)
+# Only ignore exports directory, not IFC files themselves
+data/exports/
+# Example IFC files in root/examples should be tracked with LFS
+# *.ifc  # Commented out - tracked with Git LFS
 *.bim
+
+# Data directories - ignore runtime data
+data/uploads/
+data/exports/
+data/jobs/
+data/previews/
+# But keep example data if needed
+# examples/out/  # Uncomment if you want to ignore example outputs
+
+# Build artifacts
+# Note: Large executables should be tracked with Git LFS
+# Only ignore build artifacts in specific locations
+nuget.exe
+# *.exe  # Commented out - large exe files tracked with Git LFS
+# *.dll  # Commented out - large dll files tracked with Git LFS
+*.cache
 
 # Misc
 *.swp

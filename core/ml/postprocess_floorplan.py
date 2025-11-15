@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
+import hashlib
 import math
 from typing import Dict, Iterable, List, Sequence, Tuple, TYPE_CHECKING
 import unicodedata
@@ -53,6 +55,72 @@ _WALL_KEYWORDS: Tuple[str, ...] = (
     "wall",
     "wand",
 )
+
+
+def _validate_and_repair_polygon(poly: Polygon) -> Polygon:
+    """Validate and repair polygon geometry.
+    
+    Ensures polygon is valid, closed, and has finite coordinates.
+    Uses buffer(0) trick for repair and closes unclosed polygons.
+    
+    Args:
+        poly: Input polygon to validate and repair
+    
+    Returns:
+        Validated and repaired polygon
+    """
+    if poly.is_empty:
+        return poly
+    
+    # Repair invalid polygons
+    if not poly.is_valid:
+        try:
+            repaired = poly.buffer(0)
+            if not repaired.is_empty and repaired.is_valid:
+                if isinstance(repaired, Polygon):
+                    poly = repaired
+                elif isinstance(repaired, MultiPolygon):
+                    # Take largest valid polygon
+                    valid_polys = [p for p in repaired.geoms if isinstance(p, Polygon) and p.is_valid and not p.is_empty]
+                    if valid_polys:
+                        poly = max(valid_polys, key=lambda p: p.area)
+                    else:
+                        return poly
+        except Exception:
+            pass
+    
+    # Check if closed
+    if poly.is_valid:
+        coords = list(poly.exterior.coords)
+        if len(coords) >= 3:
+            first = coords[0]
+            last = coords[-1]
+            dist = math.hypot(first[0] - last[0], first[1] - last[1])
+            if dist > 1.0:  # Not closed
+                try:
+                    coords.append(coords[0])
+                    poly = Polygon(coords)
+                except Exception:
+                    pass
+    
+    # Validate coordinates are finite
+    if poly.is_valid:
+        coords = list(poly.exterior.coords)
+        for coord in coords:
+            if not all(math.isfinite(c) for c in coord):
+                # Try to repair by removing invalid coordinates
+                try:
+                    valid_coords = [c for c in coords if all(math.isfinite(x) for x in c)]
+                    if len(valid_coords) >= 3:
+                        # Ensure closed
+                        if valid_coords[0] != valid_coords[-1]:
+                            valid_coords.append(valid_coords[0])
+                        poly = Polygon(valid_coords)
+                except Exception:
+                    pass
+                break
+    
+    return poly
 
 
 def _normalize_class_token(value: str) -> str:
@@ -114,6 +182,9 @@ def normalize_predictions(
     flip_y: bool = False,
     image_height_px: float | None = None,
 ) -> List[NormalizedDet]:
+    from loguru import logger
+    from core.exceptions import CoordinatePrecisionError
+    
     per_cls = {k.lower(): v for k, v in (per_class_thresholds or {}).items()}
     out: List[NormalizedDet] = []
     flip_height = float(image_height_px) if flip_y and image_height_px is not None else None
@@ -123,6 +194,13 @@ def normalize_predictions(
         if flip_height is not None:
             y_value = flip_height - y_px
         return (x_px / px_to_mm, y_value / px_to_mm)
+    
+    def _to_px(x_mm: float, y_mm: float) -> Tuple[float, float]:
+        """Rückkonvertierung mm → px für Präzisions-Validierung."""
+        y_px = y_mm * px_to_mm
+        if flip_height is not None:
+            y_px = flip_height - y_px
+        return (x_mm * px_to_mm, y_px)
 
     for p in preds:
         t_raw = (p.klass or "").lower().strip()
@@ -150,7 +228,29 @@ def normalize_predictions(
         pts = p.polygon
         geometry_source = "polygon"
         if pts:
-            poly = Polygon([_to_mm(x, y) for (x, y) in pts])
+            polygon_mm = Polygon([_to_mm(x, y) for (x, y) in pts])
+            # Präzisions-Validierung: Rückkonvertiere und prüfe Fehler
+            max_error = 0.0
+            mm_coords = list(polygon_mm.exterior.coords)
+            for (px_x, px_y), mm_point in zip(pts, mm_coords):
+                back_px = _to_px(mm_point[0], mm_point[1])
+                error = math.hypot(px_x - back_px[0], px_y - back_px[1])
+                max_error = max(max_error, error)
+            
+            if max_error > 0.5:
+                raise CoordinatePrecisionError(
+                    f"Präzisionsverlust {max_error:.2f}px > 0.5px. "
+                    f"px_per_mm={px_to_mm} ist ungenau! "
+                    f"Prediction: {p.klass} (confidence={p.confidence:.2f})"
+                )
+            elif max_error > 0.1:
+                logger.warning(
+                    f"Präzisionsverlust {max_error:.2f}px (tolerierbar aber hoch) "
+                    f"für {p.klass} mit px_per_mm={px_to_mm}"
+                )
+            
+            # Validate and repair polygon geometry
+            poly = _validate_and_repair_polygon(polygon_mm)
             geom = poly
         elif p.bbox:
             x, y, w, h = p.bbox
@@ -158,7 +258,7 @@ def normalize_predictions(
             top_right = _to_mm(x + w, y)
             bottom_right = _to_mm(x + w, y + h)
             bottom_left = _to_mm(x, y + h)
-            geom = Polygon(
+            polygon_mm = Polygon(
                 [
                     top_left,
                     top_right,
@@ -166,6 +266,30 @@ def normalize_predictions(
                     bottom_left,
                 ]
             )
+            # Präzisions-Validierung für BBox
+            bbox_points = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+            mm_points = [top_left, top_right, bottom_right, bottom_left]
+            max_error = 0.0
+            for (px_x, px_y), mm_point in zip(bbox_points, mm_points):
+                back_px = _to_px(mm_point[0], mm_point[1])
+                error = math.hypot(px_x - back_px[0], px_y - back_px[1])
+                max_error = max(max_error, error)
+            
+            if max_error > 0.5:
+                raise CoordinatePrecisionError(
+                    f"Präzisionsverlust {max_error:.2f}px > 0.5px (BBox). "
+                    f"px_per_mm={px_to_mm} ist ungenau! "
+                    f"Prediction: {p.klass} (confidence={p.confidence:.2f})"
+                )
+            elif max_error > 0.1:
+                logger.warning(
+                    f"Präzisionsverlust {max_error:.2f}px (tolerierbar aber hoch, BBox) "
+                    f"für {p.klass} mit px_per_mm={px_to_mm}"
+                )
+            
+            # Validate and repair polygon geometry
+            poly = _validate_and_repair_polygon(polygon_mm)
+            geom = poly
             geometry_source = "bbox"
         else:
             continue
@@ -448,7 +572,26 @@ def _segment_to_axis(
         if trimmed:
             width_samples = trimmed
 
-    half_thickness_mm = float(np.mean(width_samples))
+    # Consistent use of median for robust thickness estimation (robust against outliers)
+    # Try median first, then trimmed mean, then mean as last resort
+    half_thickness_mm = 0.0
+    if width_samples:
+        # Primary: Use median (most robust)
+        half_thickness_mm = float(np.median(width_samples))
+        
+        # If median is invalid, try trimmed mean (remove outliers)
+        if half_thickness_mm <= 0.0 and len(width_samples) >= 3:
+            sorted_samples = sorted(width_samples)
+            # Remove top and bottom 10% for trimmed mean
+            trim_count = max(1, len(sorted_samples) // 10)
+            trimmed = sorted_samples[trim_count:-trim_count] if len(sorted_samples) > trim_count * 2 else sorted_samples
+            if trimmed:
+                half_thickness_mm = float(np.mean(trimmed))
+        
+        # Last resort: use mean if median and trimmed mean both fail
+        if half_thickness_mm <= 0.0:
+            half_thickness_mm = float(np.mean(width_samples))
+    
     width_mm = max(half_thickness_mm * 2.0, MIN_WALL_WIDTH_MM)
 
     centroid_point = axis.interpolate(0.5, normalized=True)
@@ -477,8 +620,24 @@ def _segment_to_axis(
 
 
 def _apply_orth_snap(axes: List[WallAxis], tolerance_deg: float) -> None:
+    """
+    Apply orthogonal snapping to wall axes.
+    Enhanced with validation and logging for non-orthogonal walls.
+    
+    Args:
+        axes: List of wall axes to snap
+        tolerance_deg: Angle tolerance in degrees (default ±6°)
+    """
     if not axes:
         return
+    
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    non_orthogonal_count = 0
+    snapped_count = 0
+    failed_snap_count = 0
+    
     for axis_info in axes:
         axis = axis_info.axis
         if axis.length <= 0.0:
@@ -501,19 +660,85 @@ def _apply_orth_snap(axes: List[WallAxis], tolerance_deg: float) -> None:
             target_dir = (0.0, 1.0 if dy >= 0 else -1.0)
 
         if target_dir is None:
+            # Wall is not orthogonal (outside tolerance)
+            non_orthogonal_count += 1
+            deviation_from_horizontal = min(angle_norm, abs(angle_norm - 90.0))
+            deviation_from_vertical = min(abs(angle_norm - 90.0), abs(angle_norm - 0.0))
+            min_deviation = min(deviation_from_horizontal, deviation_from_vertical)
+            
+            logger.debug(
+                "Non-orthogonal wall detected: angle=%.1f° (normalized=%.1f°), deviation from orthogonal=%.1f° "
+                "(tolerance=±%.1f°) - wall will not be snapped",
+                angle_deg, angle_norm, min_deviation, tolerance_deg
+            )
             continue
 
+        # Apply snapping
         length_mm = axis.length
         midpoint = axis.interpolate(0.5, normalized=True)
         half = length_mm / 2.0
         new_start = (float(midpoint.x - target_dir[0] * half), float(midpoint.y - target_dir[1] * half))
         new_end = (float(midpoint.x + target_dir[0] * half), float(midpoint.y + target_dir[1] * half))
-        new_axis = LineString([new_start, new_end])
-        axis_info.axis = new_axis
-        axis_info.length_mm = float(new_axis.length)
-        axis_info.centroid_mm = (float(midpoint.x), float(midpoint.y))
-        axis_info.metadata["orth_snapped"] = axis_info.metadata.get("orth_snapped", 0.0) + 1.0
-        axis_info.metadata["angle_before"] = float(angle_deg)
+        
+        try:
+            new_axis = LineString([new_start, new_end])
+            
+            # Validate snapped axis
+            if new_axis.length < 1e-3:
+                failed_snap_count += 1
+                logger.warning(
+                    "Orthogonal snapping failed: resulting axis length too short (%.3fmm) - keeping original axis",
+                    new_axis.length
+                )
+                continue
+            
+            # Validate coordinates are finite
+            coords = list(new_axis.coords)
+            if not all(all(math.isfinite(c) for c in coord) for coord in coords):
+                failed_snap_count += 1
+                logger.warning(
+                    "Orthogonal snapping failed: non-finite coordinates detected - keeping original axis"
+                )
+                continue
+            
+            # Update axis
+            axis_info.axis = new_axis
+            axis_info.length_mm = float(new_axis.length)
+            axis_info.centroid_mm = (float(midpoint.x), float(midpoint.y))
+            axis_info.metadata["orth_snapped"] = axis_info.metadata.get("orth_snapped", 0.0) + 1.0
+            axis_info.metadata["angle_before"] = float(angle_deg)
+            axis_info.metadata["angle_after"] = float(math.degrees(math.atan2(target_dir[1], target_dir[0])))
+            
+            snapped_count += 1
+            logger.debug(
+                "Orthogonal snapping successful: angle changed from %.1f° to %.1f° (axis length: %.1fmm)",
+                angle_deg, axis_info.metadata["angle_after"], new_axis.length
+            )
+        except Exception as snap_exc:
+            failed_snap_count += 1
+            logger.warning(
+                "Orthogonal snapping failed with exception: %s - keeping original axis",
+                snap_exc
+            )
+            continue
+    
+    # Summary logging
+    total_axes = len([ax for ax in axes if ax.axis and ax.axis.length > 1e-3])
+    if non_orthogonal_count > 0:
+        logger.info(
+            "Orthogonal snapping: %d/%d wall(s) are non-orthogonal (outside ±%.1f° tolerance) - not snapped",
+            non_orthogonal_count, total_axes, tolerance_deg
+        )
+    if snapped_count > 0:
+        logger.debug(
+            "Orthogonal snapping: Successfully snapped %d/%d wall(s) to orthogonal directions",
+            snapped_count, total_axes
+        )
+    if failed_snap_count > 0:
+        logger.warning(
+            "Orthogonal snapping: Failed to snap %d wall(s) - original axes preserved",
+            failed_snap_count
+        )
 
 
 def _snap_axis_endpoints(
@@ -678,18 +903,90 @@ def _merge_colinear_wall_axes(axes: List[WallAxis]) -> List[WallAxis]:
     return merged_axes
 
 
-def skeletonize_and_estimate_width(wall_mask: WallMask) -> List[WallAxis]:
+def _downsample_mask_if_needed(
+    mask: np.ndarray,
+    max_dimension: int = 1000,
+    target_dpi: float = 100.0,
+) -> tuple[np.ndarray, float]:
+    """
+    Downsample mask if it exceeds max_dimension.
+    
+    Args:
+        mask: Binary mask array
+        max_dimension: Maximum dimension before downsampling
+        target_dpi: Target DPI for downsampled mask
+        
+    Returns:
+        Tuple of (downsampled_mask, scale_factor)
+    """
+    height, width = mask.shape
+    max_dim = max(height, width)
+    
+    if max_dim <= max_dimension:
+        return mask, 1.0
+    
+    # Calculate scale factor to bring max dimension to target
+    scale_factor = max_dimension / max_dim
+    
+    new_width = int(width * scale_factor)
+    new_height = int(height * scale_factor)
+    
+    # Downsample using area interpolation (better for binary masks)
+    downsampled = cv2.resize(mask, (new_width, new_height), interpolation=cv2.INTER_AREA)
+    
+    return downsampled, scale_factor
+
+
+def _upscale_coords(
+    coords: np.ndarray,
+    scale_factor: float,
+) -> np.ndarray:
+    """Upscale coordinates back to original scale."""
+    if scale_factor == 1.0:
+        return coords
+    return (coords / scale_factor).astype(np.int32)
+
+
+def _polygon_hash(polygon: Polygon) -> str:
+    """Create hash for polygon for caching."""
+    coords = list(polygon.exterior.coords)
+    coords_str = ",".join(f"{x:.2f},{y:.2f}" for x, y in coords)
+    return hashlib.md5(coords_str.encode()).hexdigest()
+
+
+def skeletonize_and_estimate_width(
+    wall_mask: WallMask,
+    *,
+    max_dimension: int = 1000,
+    target_dpi: float = 100.0,
+    enable_cache: bool = True,
+) -> List[WallAxis]:
     binary = wall_mask.mask.astype(np.uint8)
     binary[binary > 0] = 1
     if not np.any(binary):
         return []
+
+    # Downsample if needed
+    scale_factor = 1.0
+    if max_dimension > 0:
+        binary, scale_factor = _downsample_mask_if_needed(binary, max_dimension, target_dpi)
 
     skeleton = _morphological_skeleton(binary)
     coords = np.argwhere(skeleton > 0)
     if coords.shape[0] < MIN_COMPONENT_PIXELS:
         return []
 
-    distance_map = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+    # Upscale coordinates if we downsampled
+    if scale_factor != 1.0:
+        coords = _upscale_coords(coords, scale_factor)
+        # Recalculate distance map at original scale if needed
+        # For now, we'll work with downsampled distance map and scale results
+        original_binary = wall_mask.mask.astype(np.uint8)
+        original_binary[original_binary > 0] = 1
+        distance_map = cv2.distanceTransform(original_binary, cv2.DIST_L2, 5)
+    else:
+        distance_map = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+    
     components = _connected_components([(int(r), int(c)) for (r, c) in coords])
     axes: List[WallAxis] = []
 
@@ -732,6 +1029,214 @@ def skeletonize_and_estimate_width(wall_mask: WallMask) -> List[WallAxis]:
     axes = _filter_short_axes(axes, endpoint_cluster, clusters, min_length_mm=SHORT_FRAGMENT_THRESHOLD_MM)
 
     return axes
+
+
+def _is_valid_axis(axis: LineString, width_mm: float) -> bool:
+    """
+    Validate that an axis is acceptable for wall reconstruction.
+    
+    Args:
+        axis: LineString axis to validate
+        width_mm: Wall width in millimeters
+        
+    Returns:
+        True if axis is valid, False otherwise
+    """
+    if axis is None or axis.is_empty:
+        return False
+    
+    # Check axis length
+    length_mm = float(axis.length)
+    if length_mm < MIN_AXIS_LENGTH_MM:
+        return False
+    
+    # Check width is within reasonable bounds
+    if width_mm < MIN_WALL_WIDTH_MM or width_mm > 1000.0:  # Max 1m wall thickness
+        return False
+    
+    # Check axis is reasonably straight (not fragmented)
+    coords = list(axis.coords)
+    if len(coords) < 2:
+        return False
+    
+    # For multi-point lines, check that deviation from straight line is reasonable
+    if len(coords) > 2:
+        start = coords[0]
+        end = coords[-1]
+        # Calculate maximum deviation from straight line
+        max_deviation = 0.0
+        for coord in coords[1:-1]:
+            # Distance from point to line segment
+            line_length = math.hypot(end[0] - start[0], end[1] - start[1])
+            if line_length < 1e-6:
+                continue
+            # Vector from start to point
+            vx = coord[0] - start[0]
+            vy = coord[1] - start[1]
+            # Vector from start to end
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            # Project point onto line
+            t = max(0.0, min(1.0, (vx * dx + vy * dy) / (line_length * line_length)))
+            proj_x = start[0] + t * dx
+            proj_y = start[1] + t * dy
+            deviation = math.hypot(coord[0] - proj_x, coord[1] - proj_y)
+            max_deviation = max(max_deviation, deviation)
+        
+        # Allow deviation up to 10% of length or 50mm, whichever is smaller
+        max_allowed_deviation = min(length_mm * 0.1, 50.0)
+        if max_deviation > max_allowed_deviation:
+            return False
+    
+    return True
+
+
+def _estimate_by_bounding_box(polygon: Polygon, det: NormalizedDet, source_index: int) -> WallAxis | None:
+    """
+    Estimate wall axis using minimum rotated rectangle (bounding box method).
+    Faster and more robust than skeletonization for thin walls.
+    
+    Args:
+        polygon: Wall polygon
+        det: Normalized detection
+        source_index: Source index
+        
+    Returns:
+        WallAxis or None if estimation failed
+    """
+    if polygon.is_empty or polygon.area <= 1e-6:
+        return None
+    
+    rect = polygon.minimum_rotated_rectangle
+    coords = list(rect.exterior.coords)
+    if len(coords) < 4:
+        return None
+    
+    # Find longest edge (axis) and shortest edge (width)
+    edges: List[Tuple[Tuple[float, float], Tuple[float, float], float]] = []
+    for i in range(4):
+        a = coords[i]
+        b = coords[(i + 1) % 4]
+        dx = a[0] - b[0]
+        dy = a[1] - b[1]
+        length = float(math.hypot(dx, dy))
+        edges.append((a, b, length))
+    
+    longest = max(edges, key=lambda item: item[2])
+    shortest = min(edges, key=lambda item: item[2])
+    length_mm = longest[2]
+    width_mm = max(shortest[2], MIN_WALL_WIDTH_MM)
+    
+    # Create axis from longest edge
+    axis = LineString([longest[0], longest[1]])
+    
+    # Validate axis
+    if not _is_valid_axis(axis, width_mm):
+        return None
+    
+    centroid = (float(rect.centroid.x), float(rect.centroid.y))
+    
+    return WallAxis(
+        detection=det,
+        source_index=source_index,
+        axis=axis,
+        width_mm=width_mm,
+        length_mm=length_mm,
+        centroid_mm=centroid,
+        method="bounding_box",
+        metadata={"source_index": float(source_index)},
+    )
+
+
+def _estimate_by_centerline_heuristic(polygon: Polygon, det: NormalizedDet, source_index: int) -> WallAxis | None:
+    """
+    Estimate wall axis using centerline heuristic for orthogonal plans.
+    Uses polygon centerline (interior parallel offset) for better accuracy.
+    
+    Args:
+        polygon: Wall polygon
+        det: Normalized detection
+        source_index: Source index
+        
+    Returns:
+        WallAxis or None if estimation failed
+    """
+    if polygon.is_empty or polygon.area <= 1e-6:
+        return None
+    
+    try:
+        # Calculate approximate thickness from polygon
+        # Use minimum distance from centroid to boundary as half-thickness estimate
+        centroid = polygon.centroid
+        boundary = polygon.boundary
+        min_dist = boundary.distance(centroid)
+        estimated_half_thickness = float(min_dist)
+        
+        # Create centerline by offsetting boundary inward
+        # Use a small buffer inward to get centerline
+        if estimated_half_thickness > 1.0:
+            centerline_poly = polygon.buffer(-estimated_half_thickness * 0.5)
+            if centerline_poly.is_empty:
+                # Fallback: use centroid as single point
+                centerline = LineString([centroid, centroid])
+            elif isinstance(centerline_poly, Polygon):
+                # Use longest edge of interior polygon as axis
+                coords = list(centerline_poly.exterior.coords)
+                if len(coords) >= 2:
+                    # Find longest edge
+                    max_length = 0.0
+                    best_start = coords[0]
+                    best_end = coords[1]
+                    for i in range(len(coords) - 1):
+                        a = coords[i]
+                        b = coords[i + 1]
+                        length = math.hypot(b[0] - a[0], b[1] - a[1])
+                        if length > max_length:
+                            max_length = length
+                            best_start = a
+                            best_end = b
+                    centerline = LineString([best_start, best_end])
+                else:
+                    centerline = LineString([centroid, centroid])
+            else:
+                # MultiPolygon - use largest component
+                if isinstance(centerline_poly, MultiPolygon):
+                    largest = max(centerline_poly.geoms, key=lambda g: g.area if hasattr(g, 'area') else 0.0)
+                    if isinstance(largest, Polygon):
+                        coords = list(largest.exterior.coords)
+                        if len(coords) >= 2:
+                            centerline = LineString([coords[0], coords[1]])
+                        else:
+                            centerline = LineString([centroid, centroid])
+                    else:
+                        centerline = LineString([centroid, centroid])
+                else:
+                    centerline = LineString([centroid, centroid])
+        else:
+            # Very thin wall, use centroid as axis
+            centerline = LineString([centroid, centroid])
+        
+        length_mm = float(centerline.length)
+        width_mm = max(estimated_half_thickness * 2.0, MIN_WALL_WIDTH_MM)
+        
+        # Validate axis
+        if not _is_valid_axis(centerline, width_mm):
+            return None
+        
+        centroid_mm = (float(centroid.x), float(centroid.y))
+        
+        return WallAxis(
+            detection=det,
+            source_index=source_index,
+            axis=centerline,
+            width_mm=width_mm,
+            length_mm=length_mm,
+            centroid_mm=centroid_mm,
+            method="centerline_heuristic",
+            metadata={"source_index": float(source_index)},
+        )
+    except Exception:
+        return None
 
 
 def _fallback_axis(det: NormalizedDet, source_index: int, polygon: Polygon) -> WallAxis | None:
@@ -805,20 +1310,92 @@ def estimate_wall_axes_and_thickness(
     *,
     raster_px_per_mm: float = RASTER_PX_PER_MM,
     margin_mm: float = MASK_MARGIN_MM,
+    max_dimension: int = 1000,
+    target_dpi: float = 100.0,
+    enable_cache: bool = True,
 ) -> List[WallAxis]:
+    """
+    Estimate wall axes and thickness using method hierarchy:
+    1. Skeletonization (for thick walls, most accurate)
+    2. Bounding box (faster, more robust for thin walls)
+    3. Centerline heuristic (for orthogonal plans)
+    
+    Each method validates its result before returning.
+    """
+    from loguru import logger
+    
     wall_masks = build_wall_masks(norm, raster_px_per_mm=raster_px_per_mm, margin_mm=margin_mm)
     axes: List[WallAxis] = []
+    
     for mask in wall_masks:
-        skeleton_axes = skeletonize_and_estimate_width(mask)
-        if skeleton_axes:
-            axes.extend(skeleton_axes)
-        else:
+        axis_result = None
+        method_used = None
+        
+        # Method 1: Try skeletonization (for thick walls)
+        try:
+            skeleton_axes = skeletonize_and_estimate_width(
+                mask,
+                max_dimension=max_dimension,
+                target_dpi=target_dpi,
+                enable_cache=enable_cache,
+            )
+            if skeleton_axes:
+                # Validate ALL skeleton axes - only use if at least one is valid
+                valid_skeleton_axes = [ax for ax in skeleton_axes if _is_valid_axis(ax.axis, ax.width_mm)]
+                if valid_skeleton_axes:
+                    axis_result = valid_skeleton_axes
+                    method_used = "skeletonization"
+                    if len(valid_skeleton_axes) < len(skeleton_axes):
+                        logger.warning(
+                            f"Skeletonization produced {len(skeleton_axes)} axes for wall {mask.source_index}, "
+                            f"but only {len(valid_skeleton_axes)} are valid. Using valid axes only."
+                        )
+                else:
+                    logger.warning(
+                        f"Skeletonization produced invalid axes for wall {mask.source_index} "
+                        f"(all {len(skeleton_axes)} axes failed validation), using fallback"
+                    )
+        except Exception as e:
+            logger.debug(f"Skeletonization failed for wall {mask.source_index}: {e}")
+        
+        # Method 2: Try bounding box (faster, more robust)
+        if axis_result is None:
+            try:
+                bbox_axis = _estimate_by_bounding_box(mask.polygon, mask.detection, mask.source_index)
+                if bbox_axis is not None and _is_valid_axis(bbox_axis.axis, bbox_axis.width_mm):
+                    axis_result = [bbox_axis]
+                    method_used = "bounding_box"
+            except Exception as e:
+                logger.debug(f"Bounding box method failed for wall {mask.source_index}: {e}")
+        
+        # Method 3: Try centerline heuristic (for orthogonal plans)
+        if axis_result is None:
+            try:
+                centerline_axis = _estimate_by_centerline_heuristic(mask.polygon, mask.detection, mask.source_index)
+                if centerline_axis is not None and _is_valid_axis(centerline_axis.axis, centerline_axis.width_mm):
+                    axis_result = [centerline_axis]
+                    method_used = "centerline_heuristic"
+            except Exception as e:
+                logger.debug(f"Centerline heuristic failed for wall {mask.source_index}: {e}")
+        
+        # Fallback to legacy method if all fail
+        if axis_result is None:
             fallback = _fallback_axis(mask.detection, mask.source_index, mask.polygon)
-            if fallback is not None:
-                axes.append(fallback)
+            if fallback is not None and _is_valid_axis(fallback.axis, fallback.width_mm):
+                axis_result = [fallback]
+                method_used = "fallback"
+        
+        if axis_result:
+            axes.extend(axis_result)
+            if method_used != "skeletonization":
+                logger.debug(f"Used {method_used} method for wall {mask.source_index} (skeletonization unavailable)")
 
+    # Final fallback: legacy axes if nothing worked
     if not axes:
-        axes.extend(_legacy_axes(norm))
+        legacy_axes = _legacy_axes(norm)
+        for ax in legacy_axes:
+            if _is_valid_axis(ax.axis, ax.width_mm):
+                axes.append(ax)
 
     if axes:
         axes = _merge_colinear_wall_axes(axes)

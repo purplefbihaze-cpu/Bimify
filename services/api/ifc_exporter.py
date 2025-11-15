@@ -24,13 +24,26 @@ from core.reconstruct.openings import snap_openings_to_walls
 from core.reconstruct.spaces import polygonize_spaces_from_walls
 from core.settings import get_settings
 from core.validate.reconstruction_validation import generate_validation_report, write_validation_report
+from core.validate.ifc_compliance import validate_ifc_compliance
 from core.vector.ifc_topview import build_topview_geojson
 import json
 from services.api.schemas import ExportIFCRequest, ExportIFCResponse
 from core.ml.roboflow_client import RFPred
+from core.exceptions import (
+    IFCExportError,
+    GeometryError,
+    TopViewError,
+    IFCValidationError,
+)
 
 
 EXPORT_ROOT = Path("data/exports")
+
+# Top-level import to avoid UnboundLocalError
+try:
+    import ifcopenshell  # type: ignore
+except ImportError:
+    ifcopenshell = None  # type: ignore
 
 
 def prediction_to_rfpred(pred: Any) -> RFPred:
@@ -99,6 +112,13 @@ def prediction_to_rfpred(pred: Any) -> RFPred:
 
 
 async def run_ifc_export(payload: ExportIFCRequest, *, export_root: Path | None = None) -> ExportIFCResponse:
+    global ifcopenshell  # Explicitly declare as global to avoid UnboundLocalError
+    if ifcopenshell is None:
+        raise ImportError("ifcopenshell is not available")
+    
+    # Store in local variable to avoid scope issues in nested functions and threads
+    ifc_io = ifcopenshell
+    
     settings = get_settings()
     calibration_payload = payload.calibration
     calibration_dict: dict | None = None
@@ -183,7 +203,7 @@ async def run_ifc_export(payload: ExportIFCRequest, *, export_root: Path | None 
     )
 
     if not normalized:
-        raise ValueError("Keine gültigen Geometrien für den IFC-Export gefunden")
+        raise GeometryError("Keine gültigen Geometrien für den IFC-Export gefunden")
 
     spaces = polygonize_spaces_from_walls(normalized)
     effective_raster_px_per_mm = RASTER_PX_PER_MM
@@ -228,6 +248,7 @@ async def run_ifc_export(payload: ExportIFCRequest, *, export_root: Path | None 
 
     try:
         def _write_sync() -> None:
+            ifc_settings = getattr(settings, "ifc", None)
             write_ifc_with_spaces(
                 normalized=normalized,
                 spaces=spaces,
@@ -243,27 +264,136 @@ async def run_ifc_export(payload: ExportIFCRequest, *, export_root: Path | None 
                 window_head_elevation_mm=payload.window_head_elevation_mm,
                 px_per_mm=px_per_mm,
                 calibration=calibration_dict,
-                schema_version=getattr(getattr(settings, "ifc", None), "schema", "IFC4"),
-                wall_thickness_standards_mm=getattr(getattr(settings, "ifc", None), "wall_thickness_standards_mm", None),
+                schema_version=getattr(ifc_settings, "schema", "IFC4"),
+                wall_thickness_standards_mm=getattr(ifc_settings, "wall_thickness_standards_mm", None),
+                owner_org_name=getattr(ifc_settings, "owner_org_name", None),
+                owner_org_identification=getattr(ifc_settings, "owner_org_identification", None),
+                app_identifier=getattr(ifc_settings, "app_identifier", None),
+                app_full_name=getattr(ifc_settings, "app_full_name", None),
+                app_version=getattr(ifc_settings, "app_version", None),
+                person_identification=getattr(ifc_settings, "person_identification", None),
+                person_given_name=getattr(ifc_settings, "person_given_name", None),
+                person_family_name=getattr(ifc_settings, "person_family_name", None),
             )
 
         logger.info("[export-ifc] writing IFC to %s ...", out_path)
         t0 = time.perf_counter()
-        await asyncio.to_thread(_write_sync)
+        try:
+            await asyncio.to_thread(_write_sync)
+        except Exception as write_exc:
+            # Check if this is an owner history error - be more specific
+            error_msg = str(write_exc).lower()
+            error_type = type(write_exc).__name__
+            is_owner_error = (
+                "owner" in error_msg
+                or "identification" in error_msg
+                or "ifcorganization" in error_msg
+                or "ifcperson" in error_msg
+                or "ifcownerhistory" in error_msg
+                or "please create a user" in error_msg
+                or "doesn't have the following attributes" in error_msg
+            )
+            if is_owner_error:
+                logger.warning(
+                    "[export-ifc] Owner history error detected (type=%s, msg=%s), "
+                    "this should be fixed by schema-safe setup. Not retrying to avoid loop.",
+                    error_type,
+                    write_exc,
+                )
+                # Don't retry - the error should be fixed by schema-safe setup
+                # If it still fails, it's a different issue that needs investigation
+                raise RuntimeError(f"IFC owner history setup failed: {write_exc}") from write_exc
+            else:
+                # Re-raise if it's not an owner history error
+                raise
         dt = time.perf_counter() - t0
         logger.info("[export-ifc] IFC written in %.2fs", dt)
 
+        # Validate IFC parseability; if it fails, rewrite without openings as safe fallback
+        try:
+            if ifc_io is None:
+                raise ImportError("ifcopenshell is not available")
+            _ = await asyncio.to_thread(ifc_io.open, str(out_path))
+        except Exception as parse_exc:
+            logger.warning("IFC parse failed (%s). Rewriting without openings as fallback.", parse_exc)
+            # This is expected behavior - continue with fallback
+            def _write_safe_sync() -> None:
+                ifc_settings = getattr(settings, "ifc", None)
+                write_ifc_with_spaces(
+                    normalized=[d for d in normalized if d.type not in ("DOOR", "WINDOW")],
+                    spaces=spaces,
+                    out_path=out_path,
+                    project_name=project_name,
+                    storey_name=storey_name,
+                    storey_elevation=0.0,
+                    wall_axes=wall_axes,
+                    wall_polygons=wall_polygons,
+                    storey_height_mm=payload.storey_height_mm,
+                    door_height_mm=payload.door_height_mm,
+                    window_height_mm=window_height_mm,
+                    window_head_elevation_mm=payload.window_head_elevation_mm,
+                    px_per_mm=px_per_mm,
+                    calibration=calibration_dict,
+                    schema_version=getattr(ifc_settings, "schema", "IFC4"),
+                    wall_thickness_standards_mm=getattr(ifc_settings, "wall_thickness_standards_mm", None),
+                    owner_org_name=getattr(ifc_settings, "owner_org_name", None),
+                    owner_org_identification=getattr(ifc_settings, "owner_org_identification", None),
+                    app_identifier=getattr(ifc_settings, "app_identifier", None),
+                    app_full_name=getattr(ifc_settings, "app_full_name", None),
+                    app_version=getattr(ifc_settings, "app_version", None),
+                    person_identification=getattr(ifc_settings, "person_identification", None),
+                    person_given_name=getattr(ifc_settings, "person_given_name", None),
+                    person_family_name=getattr(ifc_settings, "person_family_name", None),
+                )
+            await asyncio.to_thread(_write_safe_sync)
+            warnings.append("IFC wurde ohne Öffnungen neu geschrieben, da die ursprüngliche Datei nicht lesbar war.")
+        
+        # Run IFC compliance validation
+        compliance_warnings = []
+        try:
+            # Check if ifcopenshell is available before calling validate_ifc_compliance
+            if ifc_io is None:
+                logger.warning("ifcopenshell is not available - skipping IFC compliance validation")
+                compliance_warnings.append("IFC compliance validation skipped (ifcopenshell not available)")
+            else:
+                def _validate_compliance_sync() -> None:
+                    nonlocal compliance_warnings
+                    # validate_ifc_compliance has its own ifcopenshell import, so we don't need global here
+                    compliance_report = validate_ifc_compliance(out_path)
+                    if not compliance_report.is_compliant:
+                        error_count = sum(1 for issue in compliance_report.issues if issue.severity == "ERROR")
+                        warning_count = sum(1 for issue in compliance_report.issues if issue.severity == "WARNING")
+                        if error_count > 0:
+                            compliance_warnings.append(f"IFC Compliance: {error_count} error(s) found")
+                        if warning_count > 0:
+                            compliance_warnings.append(f"IFC Compliance: {warning_count} warning(s) found")
+                        logger.info("IFC compliance check: %d errors, %d warnings", error_count, warning_count)
+                    else:
+                        logger.info("IFC file passed compliance validation")
+                
+                await asyncio.to_thread(_validate_compliance_sync)
+        except IFCValidationError as compliance_exc:
+            logger.warning("IFC compliance validation error: %s", compliance_exc)
+            compliance_warnings.append(f"IFC compliance validation error: {compliance_exc}")
+        except Exception as compliance_exc:
+            logger.warning("IFC compliance validation failed: %s", compliance_exc)
+            compliance_warnings.append("IFC compliance validation could not be completed")
+        
+        # Add compliance warnings
+        warnings.extend(compliance_warnings)
+
         # Build/refresh topview automatically
         try:
+            # Use fixed cut height of 1000mm for floor plan view to ensure all walls are captured
             cut_height = 1000.0
-            if payload.window_head_elevation_mm and window_height_mm:
-                sill = max(payload.window_head_elevation_mm - window_height_mm, 0.0)
-                cut_height = max(min(payload.window_head_elevation_mm - (window_height_mm / 2.0), payload.storey_height_mm or 3000.0), sill + 1.0)
             topview_path = out_path.with_name(f"{out_path.stem}_topview.geojson")
             await asyncio.to_thread(build_topview_geojson, out_path, topview_path, section_elevation_mm=cut_height)
             topview_url = f"/files/{topview_path.name}"
+        except TopViewError as tv_exc:
+            logger.warning("TopView-Erstellung fehlgeschlagen: %s", tv_exc)
+            topview_url = None
         except Exception as tv_exc:
-            logger.warning("TopView konnte nicht erstellt werden: %s", tv_exc)
+            logger.warning("Unerwarteter Fehler bei TopView-Erstellung: %s", tv_exc)
             topview_url = None
 
         # Optional: debug overlay for openings
@@ -302,13 +432,20 @@ async def run_ifc_export(payload: ExportIFCRequest, *, export_root: Path | None 
             validation_report_url = f"/files/{validation_path.name}"
         except Exception:
             pass
-    except Exception as exc:  # pragma: no cover - IfcOpenShell failure path
+    except (IFCExportError, GeometryError) as exc:
         logger.exception("IFC-Export fehlgeschlagen beim Schreiben von %s", out_path)
         try:
             out_path.unlink(missing_ok=True)
         except Exception:
             pass
-        raise RuntimeError(f"IFC-Export fehlgeschlagen ({out_path.name}): {type(exc).__name__}: {exc}") from exc
+        raise
+    except Exception as exc:  # pragma: no cover - IfcOpenShell failure path
+        logger.exception("Unerwarteter Fehler beim IFC-Export von %s", out_path)
+        try:
+            out_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise IFCExportError(f"IFC-Export fehlgeschlagen ({out_path.name}): {type(exc).__name__}: {exc}", {"out_path": str(out_path)}) from exc
 
     preprocess_settings = getattr(getattr(settings, "geometry", None), "preprocess", None)
     if preprocess_settings and getattr(preprocess_settings, "enabled", False):
@@ -329,5 +466,6 @@ async def run_ifc_export(payload: ExportIFCRequest, *, export_root: Path | None 
         px_per_mm=px_per_mm,
         warnings=warnings or None,
     )
+
 
 

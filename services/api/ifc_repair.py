@@ -7,22 +7,68 @@ import tempfile
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
-from shapely.geometry import GeometryCollection, LineString, MultiLineString, MultiPolygon, Polygon, shape
+from shapely.geometry import GeometryCollection, LineString, MultiLineString, MultiPolygon, Polygon, shape, mapping
 
 from core.ml.postprocess_floorplan import NormalizedDet, estimate_wall_axes_and_thickness
 from core.reconstruct.spaces import polygonize_spaces_from_walls
 from core.settings import get_settings
 from core.vector.ifc_topview import build_topview_geojson
 from services.api.ifc_exporter import EXPORT_ROOT
-from core.ifc.build_ifc43_model import write_ifc_with_spaces
+from core.ifc.build_ifc43_model import write_ifc_with_spaces, collect_wall_polygons, snap_thickness_mm
+from core.reconstruct.openings import snap_openings_to_walls, reproject_openings_to_snapped_axes
+from core.vector.snap import cluster_orientations, snap_axis_orientation, build_line_graph, extend_trim_to_intersections, merge_colinear, closed_outer_hull
+from core.validate.reconstruction_validation import generate_validation_report, write_validation_report
+from core.exceptions import (
+    RepairError,
+    GeometryExtractionError,
+    GeometryProcessingError,
+    TopViewError,
+    IFCExportError,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
-class RepairError(RuntimeError):
-    """Raised when the repair pipeline cannot proceed."""
+def build_preview_axes(
+    source_path: Path,
+    *,
+    px_per_mm: float | None = None,
+    image_bgr: "numpy.ndarray | None" = None,  # type: ignore[name-defined]
+    rf_norm: Sequence[NormalizedDet] | None = None,
+) -> tuple[list[NormalizedDet], list]:
+    """
+    Extract normalized geometry and estimate axes; optionally refine against image edges and RF shapes.
+    """
+    try:
+        normalized = _extract_normalized_geometry(source_path)
+    except (GeometryExtractionError, TopViewError) as exc:
+        logger.error("Preview: _extract_normalized_geometry fehlgeschlagen für %s: %s", source_path, exc)
+        raise
+    except Exception as exc:
+        logger.error("Preview: Unerwarteter Fehler bei _extract_normalized_geometry für %s: %s", source_path, exc)
+        raise GeometryExtractionError(f"Geometrie-Extraktion fehlgeschlagen: {exc}", {"source_path": str(source_path)}) from exc
+    if not normalized:
+        raise RepairError(f"Keine Geometrie aus IFC-Datei extrahiert: {source_path.name}")
+    
+    try:
+        axes = estimate_wall_axes_and_thickness(normalized)
+    except Exception as exc:
+        logger.error("Preview: estimate_wall_axes_and_thickness fehlgeschlagen: %s", exc)
+        raise GeometryProcessingError(f"Achsen-Schätzung fehlgeschlagen: {exc}") from exc
+    
+    try:
+        if image_bgr is not None:
+            from core.vision.edge_detection import detect_edges_and_lines
+            from core.reconstruct.final_fit import refine_axes_using_edges_and_rf
 
+            _, image_lines = detect_edges_and_lines(image_bgr, px_per_mm=px_per_mm)
+            axes = refine_axes_using_edges_and_rf(axes, image_lines=image_lines, rf_norm=rf_norm or [])
+    except Exception:
+        # Best effort refinement; ignore failures in preview
+        logger.debug("Preview: Bild-Verfeinerung übersprungen (optional)")
+        pass
+    return normalized, axes
 
 def run_ifc_repair(
     source_path: Path,
@@ -30,7 +76,21 @@ def run_ifc_repair(
     level: int = 1,
     export_root: Path | None = None,
 ) -> Tuple[Path, List[str]]:
-    """Render a repaired IFC using geometry extracted from the source file."""
+    """Repair IFC file by extracting geometry and regenerating with improved topology.
+    
+    Args:
+        source_path: Path to source IFC file.
+        level: Repair level (currently only level 1 is supported).
+        export_root: Optional root directory for exports. Defaults to data/exports.
+    
+    Returns:
+        Tuple of (repaired_path, warnings_list).
+    
+    Raises:
+        RepairError: If repair level is not supported.
+        FileNotFoundError: If source file does not exist.
+        GeometryExtractionError: If geometry extraction fails.
+    """
 
     if level != 1:
         raise RepairError(f"Reparatur-Level {level} wird noch nicht unterstützt")
@@ -49,8 +109,13 @@ def run_ifc_repair(
 
     try:
         normalized = _extract_normalized_geometry(source_path)
-    except Exception as exc:  # pragma: no cover - defensive
+    except (GeometryExtractionError, TopViewError) as exc:
         logger.exception("Konnte TopView-Geometrie nicht extrahieren")
+        warnings.append(f"TopView-Extraktion fehlgeschlagen: {type(exc).__name__}: {exc}")
+        shutil.copyfile(source_path, repaired_path)
+        return repaired_path, warnings
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Unerwarteter Fehler bei TopView-Extraktion")
         warnings.append(f"TopView-Extraktion fehlgeschlagen: {type(exc).__name__}: {exc}")
         shutil.copyfile(source_path, repaired_path)
         return repaired_path, warnings
@@ -61,8 +126,73 @@ def run_ifc_repair(
         shutil.copyfile(source_path, repaired_path)
         return repaired_path, warnings
 
+    # Spaces (initial – will be recomputed implicitly from result as well)
     spaces = polygonize_spaces_from_walls(walls)
+    # Filter Mini-Inseln
+    try:
+        spaces = [sp for sp in spaces if float(getattr(sp, "area_m2", 0.0)) >= 0.05]
+    except Exception:
+        pass
+
+    # Estimate wall axes and thickness
     axes = estimate_wall_axes_and_thickness(normalized)
+    # Snap thickness to standards for stability
+    try:
+        for ax in axes:
+            try:
+                is_external = getattr(getattr(ax, "detection", None), "is_external", None)
+            except Exception:
+                is_external = None
+            ax.width_mm = float(
+                snap_thickness_mm(
+                    getattr(ax, "width_mm", None),
+                    standards=tuple(wall_thickness_standards or ()) if wall_thickness_standards else (),
+                    is_external=is_external,
+                )
+            )
+    except Exception:
+        pass
+
+    # Optional: lightweight orientation snapping of axes (±6°) to stabilize topology
+    try:
+        base_angles = cluster_orientations([ax.axis for ax in axes if getattr(ax, "axis", None) is not None])
+        snapped_axes = []
+        for ax in axes:
+            geom = getattr(ax, "axis", None)
+            if geom is None:
+                snapped_axes.append(None)
+                continue
+            snapped = snap_axis_orientation(geom, base_angles, angle_tolerance_deg=6.0)
+            try:
+                ax.axis = snapped  # mutate in place
+            except Exception:
+                pass
+            snapped_axes.append(snapped)
+
+        # Build and gently repair linework (collapse tiny endpoint gaps)
+        graph = build_line_graph([ln for ln in snapped_axes if ln is not None], merge_tolerance_mm=10.0)
+        graph = extend_trim_to_intersections(graph, snap_dist_mm=10.0)
+        graph = merge_colinear(graph)
+
+        # Compute robust outer hull for diagnostics and potential clipping
+        wall_polygons = collect_wall_polygons(normalized)
+        hull = closed_outer_hull(list(wall_polygons.values()), epsilon_mm=10.0)
+    except Exception:
+        wall_polygons = collect_wall_polygons(normalized)
+        hull = None
+
+    # Openings: snap to axes and reproject so depth == wall thickness (bündig)
+    try:
+        assignments, wall_polys = snap_openings_to_walls(normalized, wall_axes=axes, wall_polygons_override=list(wall_polygons.values()))
+        reproject_openings_to_snapped_axes(
+            normalized, 
+            assignments, 
+            wall_axes=axes, 
+            depth_equals_wall_thickness=True,
+            wall_polygons=wall_polys
+        )
+    except Exception as exc:
+        logger.warning("Konnte Öffnungen nicht neu ausrichten: %s", exc)
 
     try:
         write_ifc_with_spaces(
@@ -82,8 +212,45 @@ def run_ifc_repair(
             schema_version=getattr(getattr(settings, "ifc", None), "schema", "IFC4"),
             wall_thickness_standards_mm=wall_thickness_standards,
         )
-    except Exception as exc:  # pragma: no cover - defensive
+
+        # Debug layers
+        import os
+        debug_snap = str(os.getenv("DEBUG_SNAP", "")).lower() in {"1", "true", "yes"}
+        if debug_snap:
+            try:
+                debug_dir = repaired_path.parent
+                # Hull
+                if hull is not None and not hull.is_empty:
+                    (debug_dir / f"{repaired_path.stem}_snap_hull.wkt").write_text(hull.wkt, encoding="utf-8")
+                # Axes
+                axes_geojson = {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "properties": {"type": "WALL_AXIS", "width_mm": getattr(ax, "width_mm", None)},
+                            "geometry": None if getattr(ax, "axis", None) is None else mapping(ax.axis),
+                        }
+                        for ax in axes
+                    ],
+                }
+                (debug_dir / f"{repaired_path.stem}_snap_axes.geojson").write_text(json.dumps(axes_geojson), encoding="utf-8")
+            except Exception:
+                pass
+        # Validation report
+        try:
+            validation_report = generate_validation_report(normalized, axes, repaired_path)
+            report_path = repaired_path.with_name(f"{repaired_path.stem}_validation.json")
+            write_validation_report(validation_report, report_path)
+        except Exception:
+            pass
+    except (IFCExportError, GeometryProcessingError) as exc:
         logger.exception("Konnte reparierte IFC nicht schreiben")
+        warnings.append(f"Reparatur fehlgeschlagen – Originaldatei kopiert ({type(exc).__name__}: {exc})")
+        shutil.copyfile(source_path, repaired_path)
+        return repaired_path, warnings
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Unerwarteter Fehler beim Schreiben der reparierten IFC")
         warnings.append(f"Reparatur fehlgeschlagen – Originaldatei kopiert ({type(exc).__name__}: {exc})")
         shutil.copyfile(source_path, repaired_path)
         return repaired_path, warnings
@@ -92,14 +259,36 @@ def run_ifc_repair(
 
 
 def _extract_normalized_geometry(source_path: Path) -> List[NormalizedDet]:
-    with tempfile.NamedTemporaryFile("w+", suffix="_repair.geojson", delete=False, dir=source_path.parent) as tmp:
-        temp_geojson_path = Path(tmp.name)
-
+    # Check if topview already exists and is up-to-date
+    existing_topview = source_path.with_name(f"{source_path.stem}_topview.geojson")
+    use_existing = False
+    if existing_topview.exists():
+        try:
+            # Check if topview is newer than source file
+            if existing_topview.stat().st_mtime >= source_path.stat().st_mtime:
+                use_existing = True
+                logger.debug("Preview: Verwende vorhandene TopView-Datei: %s", existing_topview.name)
+        except OSError:
+            pass
+    
+    if use_existing:
+        temp_geojson_path = existing_topview
+    else:
+        with tempfile.NamedTemporaryFile("w+", suffix="_repair.geojson", delete=False, dir=source_path.parent) as tmp:
+            temp_geojson_path = Path(tmp.name)
+        try:
+            logger.info("Preview: Erstelle TopView für %s (kann bei großen Dateien länger dauern)", source_path.name)
+            build_topview_geojson(source_path, temp_geojson_path)
+        except Exception as exc:
+            temp_geojson_path.unlink(missing_ok=True)
+            raise TopViewError(f"TopView-Erstellung fehlgeschlagen: {exc}", {"source_path": str(source_path)}) from exc
+    
     try:
-        build_topview_geojson(source_path, temp_geojson_path)
         data = json.loads(temp_geojson_path.read_text(encoding="utf-8"))
     finally:
-        temp_geojson_path.unlink(missing_ok=True)
+        # Only delete if it was a temporary file
+        if not use_existing:
+            temp_geojson_path.unlink(missing_ok=True)
 
     features = data.get("features", [])
     normalized: List[NormalizedDet] = []
@@ -134,7 +323,7 @@ def _extract_normalized_geometry(source_path: Path) -> List[NormalizedDet]:
         )
 
     if not normalized:
-        raise RepairError("Keine verwertbare Geometrie gefunden")
+        raise GeometryExtractionError("Keine verwertbare Geometrie gefunden", {"source_path": str(source_path)})
 
     return normalized
 

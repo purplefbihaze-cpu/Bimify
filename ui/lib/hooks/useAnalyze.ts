@@ -16,7 +16,18 @@ export function useAnalyze() {
       triggerHaptic("success");
       return res;
     } catch (err: any) {
-      const message = err?.message ? String(err.message) : "Analyse fehlgeschlagen";
+      let message = err?.message ? String(err.message) : "Analyse fehlgeschlagen";
+      
+      // Parse and improve Roboflow 403 error messages
+      if (message.includes("403") || message.includes("Forbidden")) {
+        // Extract the helpful part if it's a detailed error
+        if (message.includes("Roboflow API-Zugriff verweigert")) {
+          // Keep the improved backend message
+        } else if (message.includes("Roboflow inference failed")) {
+          message = "Roboflow API-Zugriff verweigert (403). Bitte überprüfe deinen API-Key in den Einstellungen und stelle sicher, dass er Zugriff auf das Projekt hat.";
+        }
+      }
+      
       setError(message);
       triggerHaptic("error");
       throw err;

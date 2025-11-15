@@ -1,0 +1,69 @@
+{
+  "summary": {
+    "total_issues": 35,
+    "connectivity_issues": 0,
+    "overlap_issues": 3,
+    "room_issues": 17,
+    "opening_issues": 15
+  },
+  "metrics": {
+    "wall_count": 22,
+    "opening_count": 19,
+    "room_count": 18,
+    "connected_walls": 4,
+    "disconnected_walls": 18,
+    "rooms_with_boundaries": 0,
+    "openings_in_walls": 19
+  },
+  "issues": {
+    "connectivity": [],
+    "overlaps": [
+      "Walls 08fd5f61-7ff6-4d3f-8940-16b33ee25831 and c7ff07dd-7fc7-4fc9-ada1-49eec050d5bd are parallel and very close (0.017m)",
+      "Walls af988123-d3c7-465f-a923-adcf8495fa97 and 8389db61-ce7e-47be-ade6-4d41f197c35d are parallel and very close (0.018m)",
+      "Walls 2faf1db7-e0ee-461f-b8a4-2c642a19b95b and 03719ca0-9593-4252-8285-02a778cd9f77 are parallel and very close (0.000m)"
+    ],
+    "rooms": [
+      "Room f3d5e223-5cc4-4a53-9b5d-df7d77a8a01e polygon is not closed (gap: 0.134m)",
+      "Room 4ce41b49-3755-44f4-b376-300080eac128 polygon is not closed (gap: 0.065m)",
+      "Room a24dcc64-d09d-410f-893e-32df208bedf5 polygon is not closed (gap: 0.147m)",
+      "Room fd9b9cc4-113c-4820-b7c7-7f83d129ce45 polygon is not closed (gap: 0.086m)",
+      "Room 1e0c0213-f223-453b-adb2-2a9a44ec177a polygon is not closed (gap: 0.094m)",
+      "Room 7e347115-882f-41ed-9c1c-a92a8dfad6b3 polygon is not closed (gap: 0.064m)",
+      "Room 313d895a-cffa-4bce-92bf-a9b672a1dd46 polygon is not closed (gap: 0.148m)",
+      "Room f56ec592-19e7-4793-a56c-0a326f7e030a polygon is not closed (gap: 0.095m)",
+      "Room 96b4f1d1-9edc-475e-9012-2925d49c0c90 polygon is not closed (gap: 0.037m)",
+      "Room 0f56e7d9-bbc3-4448-b392-db6f5955e83e polygon is not closed (gap: 0.071m)",
+      "Room cb3c4fdc-adcf-4431-a0ba-df1ebf29938b polygon is not closed (gap: 0.094m)",
+      "Room 45d3ad73-f7d9-4350-8992-6351e42843fa polygon is not closed (gap: 0.071m)",
+      "Room 7781f124-bd83-4232-9e0d-c972527fc459 polygon is not closed (gap: 0.207m)",
+      "Room 417bcfbb-d6a7-4af3-b911-42c5401d95fc polygon is not closed (gap: 0.150m)",
+      "Room b6245185-1083-458e-9292-affbfcd70e14 polygon is not closed (gap: 0.018m)",
+      "Room a8c6f2b6-3bf4-4641-b5d1-60d57d939b0b polygon is not closed (gap: 0.015m)",
+      "Room fd3fa96d-ee10-4424-8f20-81dfd9735544 polygon is not closed (gap: 0.097m)"
+    ],
+    "openings": [
+      "Opening c742138b-271d-4adf-88d7-2223a39cdb52 extends beyond wall c7ff07dd-7fc7-4fc9-ada1-49eec050d5bd bounds",
+      "Opening 99bf3b8b-daaa-46a8-80b7-dc374fb0333b extends beyond wall c6b4ffb7-6c6b-4631-9823-b40d88a4f7cf bounds",
+      "Opening 9395a1cc-60da-41f7-8b7f-aad93003cf82 extends beyond wall 8918b960-0fd1-4b56-aac4-1630517a0d27 bounds",
+      "Opening 61c175b8-ba37-43b3-8c49-e8dce5f56f75 extends beyond wall 8389db61-ce7e-47be-ade6-4d41f197c35d bounds",
+      "Opening 2ad45e36-3f99-474c-af59-b5a0b94ea909 extends beyond wall 90dd651b-2782-46ff-9c0f-28362294be7b bounds",
+      "Opening 2f45e3dc-ce79-4a60-9068-b8655445027d extends beyond wall 64654415-f647-4658-8d32-ce2db4e33070 bounds",
+      "Opening 7e066768-7b33-4959-826a-6091d24ff14c extends beyond wall 03b5b017-bbaf-4563-be83-9c53bdab6f3f bounds",
+      "Opening 236c42ce-45ef-49a4-b1ef-2a163fc75803 extends beyond wall c48d8d99-1de5-41b6-bdf2-f0a993db9661 bounds",
+      "Opening f9b1d5f7-c199-4b6d-8962-9203e8b7974f extends beyond wall 9dd21364-148f-465a-8317-5408e1654a59 bounds",
+      "Opening 92b7c573-1e37-466e-bff7-f3b64fd9f811 extends beyond wall 9dd21364-148f-465a-8317-5408e1654a59 bounds",
+      "Opening 336c3b86-c3a5-496b-b633-cc61c3c34a69 extends beyond wall 8d7c36a1-debd-40fe-8284-c591aa84b283 bounds",
+      "Opening 1eea6ffb-f8e3-48d9-8e39-bdd3a7c7083d extends beyond wall c48d8d99-1de5-41b6-bdf2-f0a993db9661 bounds",
+      "Opening 18972fe8-fc58-45bc-b0d2-5e66a7c81ddc extends beyond wall 9dd21364-148f-465a-8317-5408e1654a59 bounds",
+      "Opening 63b4a7e5-b815-4482-ab14-21757d141058 extends beyond wall 906346d4-780d-4e15-9465-a447290f766e bounds",
+      "Opening 15df9619-f4f9-4772-b42d-207f0a71068b extends beyond wall c48d8d99-1de5-41b6-bdf2-f0a993db9661 bounds"
+    ]
+  },
+  "plan_stats": {
+    "walls": 22,
+    "openings": 19,
+    "rooms": 18,
+    "scale": 0.001,
+    "image_size": "976x687"
+  }
+}

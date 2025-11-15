@@ -133,12 +133,13 @@ def _geometry_from_extruded(extruded: ifcopenshell.entity_instance, base_matrix:
 
     transform = base_matrix @ profile_matrix
 
-    # Section filter: include only if cut elevation lies within the extrusion range
+    # Section filter: include if cut elevation intersects the extrusion range
+    # Changed from < to <= to include elements that intersect the cut plane at the upper edge
     if section_elevation_mm is not None:
         try:
             origin_z = _apply_matrix((0.0, 0.0, 0.0), transform)[2]
             depth = float(getattr(extruded, "Depth", 0.0))
-            if not (origin_z <= section_elevation_mm < origin_z + depth):
+            if not (origin_z <= section_elevation_mm <= origin_z + depth):
                 return None
         except Exception:
             pass
