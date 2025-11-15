@@ -32,6 +32,7 @@ from core.ml.pipeline_config import PipelineConfig
 from core.reconstruct.spaces import SpacePoly
 from core.ifc.geometry_utils import snap_thickness_mm, find_nearest_wall
 from core.ifc.ifc_v2_validator import validate_before_export, validate_ifc_file
+from config.ifc_standards import STANDARDS
 
 logger = logging.getLogger(__name__)
 
@@ -128,16 +129,18 @@ atexit.register(_shutdown_shared_executor)
 class IFCConstants:
     """All IFC dimension constants in millimeters for consistency.
     
+    Values are converted from STANDARDS (meters) to millimeters.
     Values are converted to meters only at IFC entity creation.
     
     Note: GEOMETRY_SIMPLIFICATION_WARNING_THRESHOLD is now in PipelineConfig
     as the single source of truth. Use PipelineConfig.default().geometry_simplification_warning_threshold
     or access via config parameter.
     """
-    LINING_THICKNESS_MM = 50.0  # 5cm standard window frame thickness
-    LINING_DEPTH_MM = 70.0  # 7cm standard window depth
-    PANEL_THICKNESS_MM = 50.0  # 5cm standard panel thickness
-    FLOOR_THICKNESS_MM = 200.0  # 20cm standard floor thickness
+    # Convert from STANDARDS (meters) to millimeters
+    LINING_THICKNESS_MM = STANDARDS["WINDOW_FRAME_WIDTH"] * 1000.0  # Convert m to mm
+    LINING_DEPTH_MM = STANDARDS["WINDOW_FRAME_DEPTH"] * 1000.0  # Convert m to mm
+    PANEL_THICKNESS_MM = STANDARDS["WINDOW_FRAME_WIDTH"] * 1000.0  # Convert m to mm (using frame width as panel thickness)
+    FLOOR_THICKNESS_MM = STANDARDS["SLAB_THICKNESS"] * 1000.0  # Convert m to mm
     BUFFER_FACTOR = 0.5  # Half wall thickness for floor buffer (dimensionless)
     # Deprecated: Use PipelineConfig.geometry_simplification_warning_threshold instead
     # Kept for backward compatibility - will be removed in future version
@@ -359,18 +362,18 @@ class IFCV2Builder:
             }
             if category == "Masonry":
                 props.update({
-                    "MassDensity": 1800.0,  # kg/m³
-                    "ThermalConductivity": 0.77,  # W/(m·K)
+                    "MassDensity": STANDARDS["MATERIAL_MASONRY_DENSITY"],  # kg/m³
+                    "ThermalConductivity": STANDARDS["MATERIAL_MASONRY_THERMAL_CONDUCTIVITY"],  # W/(m·K)
                 })
             elif category == "Concrete":
                 props.update({
-                    "MassDensity": 2400.0,  # kg/m³
-                    "ThermalConductivity": 1.4,  # W/(m·K)
+                    "MassDensity": STANDARDS["MATERIAL_CONCRETE_DENSITY"],  # kg/m³
+                    "ThermalConductivity": STANDARDS["MATERIAL_CONCRETE_THERMAL_CONDUCTIVITY"],  # W/(m·K)
                 })
             elif category == "Glass":
                 props.update({
-                    "MassDensity": 2500.0,  # kg/m³
-                    "ThermalConductivity": 0.8,  # W/(m·K)
+                    "MassDensity": STANDARDS["MATERIAL_GLASS_DENSITY"],  # kg/m³
+                    "ThermalConductivity": STANDARDS["MATERIAL_GLASS_THERMAL_CONDUCTIVITY"],  # W/(m·K)
                 })
             
             ifcopenshell.api.run("pset.edit_pset", self.model, pset=pset, properties=props)
@@ -383,10 +386,24 @@ class IFCV2Builder:
     # Material mapping configuration for different wall types
     # Format: (material_name, default_thickness_mm, thermal_conductivity_W_per_mK)
     # Use ClassVar to make it a class variable, not a dataclass field
+    # Updated to use STANDARDS from config
     MATERIAL_MAP: ClassVar[Dict[str, Tuple[str, float, float]]] = {
-        "wall_external": ("Masonry", 400.0, 0.77),  # External wall: Masonry, 40cm, λ=0.77 W/(m·K)
-        "wall_internal": ("Gypsum", 100.0, 0.25),  # Internal wall: Gypsum, 10cm, λ=0.25 W/(m·K)
-        "stair": ("Concrete", 300.0, 2.1),  # Stair: Concrete, 30cm, λ=2.1 W/(m·K)
+        "wall_external": (
+            STANDARDS["WALL_MATERIAL_EXTERNAL"], 
+            STANDARDS["WALL_EXTERNAL_THICKNESS"] * 1000.0,  # Convert m to mm
+            STANDARDS["MATERIAL_MASONRY_THERMAL_CONDUCTIVITY"]
+        ),
+        "wall_internal": (
+            STANDARDS["WALL_MATERIAL_INTERNAL"], 
+            STANDARDS["WALL_INTERNAL_THICKNESS"] * 1000.0,  # Convert m to mm
+            STANDARDS["MATERIAL_MASONRY_THERMAL_CONDUCTIVITY"]
+        ),
+        "stair": ("Concrete", 300.0, STANDARDS["MATERIAL_CONCRETE_THERMAL_CONDUCTIVITY"]),
+        "slab": (
+            STANDARDS["SLAB_MATERIAL"],
+            STANDARDS["SLAB_THICKNESS"] * 1000.0,  # Convert m to mm
+            STANDARDS["MATERIAL_CONCRETE_THERMAL_CONDUCTIVITY"]
+        ),
     }
 
     def _ensure_wall_type_with_material(self, name: str | None, is_external: bool, thickness_m: float) -> Any:
@@ -521,6 +538,98 @@ class IFCV2Builder:
             rounded_points.append(rounded_points[0])
         cartesian_points = [self._point(coords) for coords in rounded_points]
         return self.model.create_entity("IfcPolyline", Points=tuple(cartesian_points))
+
+    def _ensure_axis_context(self) -> Any:
+        """Ensure Axis subcontext exists for 2D wall axes.
+        
+        Returns:
+            IfcGeometricRepresentationSubContext with ContextIdentifier="Axis"
+        """
+        # Check if axis context already exists
+        subcontexts = self.model.by_type("IfcGeometricRepresentationSubContext")
+        axis_context = next(
+            (sc for sc in subcontexts if (getattr(sc, "ContextIdentifier", "") or "").lower() == "axis"),
+            None
+        )
+        
+        if axis_context is not None:
+            return axis_context
+        
+        # Check if Plan context exists, create if not
+        plan_context = next(
+            (c for c in self.model.by_type("IfcGeometricRepresentationContext") 
+             if getattr(c, "ContextType", "") == "Plan"),
+            None
+        )
+        
+        if plan_context is None:
+            # Create Plan context
+            plan_context = ifcopenshell.api.run(
+                "context.add_context",
+                self.model,
+                context_type="Plan",
+            )
+        
+        # Create Axis subcontext
+        axis_context = ifcopenshell.api.run(
+            "context.add_context",
+            self.model,
+            context_type="Plan",
+            context_identifier="Axis",
+            target_view="GRAPH_VIEW",
+            parent=plan_context,
+        )
+        
+        return axis_context
+
+    def _create_wall_axis_representation(self, wall_points: Sequence[Sequence[float]]) -> Any | None:
+        """Create 2D axis representation for wall (polyline from start to end).
+        
+        Args:
+            wall_points: List of wall corner points
+            
+        Returns:
+            IfcShapeRepresentation with Axis identifier, or None if creation fails
+        """
+        try:
+            if len(wall_points) < 2:
+                return None
+            
+            # Calculate wall length from first two points
+            p1 = wall_points[0]
+            p2 = wall_points[1]
+            wall_length = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+            
+            if wall_length <= 0:
+                return None
+            
+            # Get or create axis context
+            axis_context = self._ensure_axis_context()
+            
+            # Create 2D points for axis polyline: (0,0) to (wall_length, 0)
+            # This represents the wall axis in the wall's local coordinate system
+            start_point = self.model.create_entity("IfcCartesianPoint", Coordinates=(0.0, 0.0))
+            end_point = self.model.create_entity("IfcCartesianPoint", Coordinates=(float(wall_length), 0.0))
+            
+            # Create 2D polyline
+            axis_polyline = self.model.create_entity(
+                "IfcPolyline",
+                Points=(start_point, end_point),
+            )
+            
+            # Create axis representation
+            axis_representation = self.model.create_entity(
+                "IfcShapeRepresentation",
+                ContextOfItems=axis_context,
+                RepresentationIdentifier="Axis",
+                RepresentationType="Curve2D",
+                Items=(axis_polyline,),
+            )
+            
+            return axis_representation
+        except Exception as e:
+            logger.warning(f"Failed to create wall axis representation: {e}")
+            return None
 
     def _create_swept_solid(
         self,
@@ -759,9 +868,18 @@ class IFCV2Builder:
             depth=profile.height,
             direction=(0.0, 0.0, 1.0),
         )
+        
+        # Create axis representation (2D polyline from start to end point)
+        axis_representation = self._create_wall_axis_representation(wall_points)
+        
+        # Combine Body and Axis representations
+        representations = [shape_representation]
+        if axis_representation is not None:
+            representations.append(axis_representation)
+        
         wall.Representation = self.model.create_entity(
             "IfcProductDefinitionShape",
-            Representations=(shape_representation,),
+            Representations=tuple(representations),
         )
         
         return wall, wall_type
@@ -846,12 +964,21 @@ class IFCV2Builder:
             wall = self._create_simple_wall(profile, wall_points, uniform_thickness_m)
 
         pset = ifcopenshell.api.run("pset.add_pset", self.model, product=wall, name="Pset_WallCommon")
+        # Determine thermal transmittance based on wall type
+        thermal_transmittance = (
+            STANDARDS["WALL_THERMAL_TRANSMITTANCE_EXTERNAL"] 
+            if profile.is_external 
+            else STANDARDS["WALL_THERMAL_TRANSMITTANCE_INTERNAL"]
+        )
         ifcopenshell.api.run(
             "pset.edit_pset",
             self.model,
             pset=pset,
             properties={
                 "IsExternal": bool(profile.is_external),
+                "LoadBearing": STANDARDS["WALL_LOAD_BEARING"],  # IfcBoolean
+                "FireRating": STANDARDS["WALL_FIRE_RATING"],  # IfcLabel
+                "ThermalTransmittance": float(thermal_transmittance),  # IfcReal (U-Wert in W/m²K)
                 "Reference": profile.name or "Wall",
             },
         )
@@ -942,6 +1069,47 @@ class IFCV2Builder:
         # type.assign_type API expects related_objects (list) not related_object (single)
         ifcopenshell.api.run("type.assign_type", self.model, related_objects=[filling], relating_type=type_entity)
 
+        # Get wall thickness from wall entity (from quantities or material layer set)
+        wall_thickness_m = profile.thickness  # Default to profile thickness
+        try:
+            # Try to get wall thickness from quantities
+            from ifcopenshell.util import element as ifc_element_utils
+            wall_psets = ifc_element_utils.get_psets(wall, should_inherit=False)
+            wall_quantities = ifc_element_utils.get_psets(wall, qtos_only=True)
+            for qto_name, qto_props in wall_quantities.items():
+                if "Width" in qto_props:
+                    wall_thickness_m = float(qto_props["Width"])
+                    break
+            # If not found in quantities, try material layer set
+            if wall_thickness_m == profile.thickness:
+                for rel in getattr(wall, "HasAssociations", []) or []:
+                    if rel.is_a("IfcRelAssociatesMaterial"):
+                        material_usage = getattr(rel, "RelatingMaterial", None)
+                        if material_usage and hasattr(material_usage, "ForLayerSet"):
+                            layer_set = material_usage.ForLayerSet
+                            if hasattr(layer_set, "MaterialLayers"):
+                                total_thickness = sum(
+                                    float(layer.LayerThickness) 
+                                    for layer in layer_set.MaterialLayers 
+                                    if hasattr(layer, "LayerThickness")
+                                )
+                                if total_thickness > 0:
+                                    wall_thickness_m = total_thickness
+                                    break
+        except Exception as e:
+            logger.debug(f"Could not determine wall thickness, using profile.thickness: {e}")
+        
+        # Determine opening depth and Z-position based on type
+        is_window = ifc_class == "IfcWindow"
+        if is_window:
+            # For windows: opening depth = wall thickness, position at sill height (0.9m)
+            opening_depth = wall_thickness_m
+            opening_z_position = STANDARDS["WINDOW_SILL_HEIGHT"]  # 0.9m
+        else:
+            # For doors: opening depth = wall thickness, position at OKFF (0.0m)
+            opening_depth = wall_thickness_m
+            opening_z_position = 0.0
+        
         # Berechne Opening-Placement RELATIV zur Wand
         # Calculate opening placement relative to wall's local coordinate system
         wall_placement = getattr(wall, "ObjectPlacement", None) or self.storey.ObjectPlacement
@@ -955,7 +1123,9 @@ class IFCV2Builder:
                 
                 # Transform opening coordinates from global to wall-local space
                 # profile.location is in global coordinates, we need wall-local
-                global_point = np.array([profile.location[0], profile.location[1], profile.location[2] if len(profile.location) > 2 else 0.0, 1.0])
+                # Adjust Z coordinate for window sill height or door OKFF
+                global_z = opening_z_position if len(profile.location) < 3 else profile.location[2]
+                global_point = np.array([profile.location[0], profile.location[1], global_z, 1.0])
                 
                 # Transform to wall-local coordinates (inverse of wall matrix)
                 wall_matrix_inv = np.linalg.inv(wall_matrix)
@@ -963,10 +1133,19 @@ class IFCV2Builder:
                 
                 local_origin = (float(local_point[0]), float(local_point[1]), float(local_point[2]))
             except Exception as e:
-                logger.debug(f"Could not transform opening coordinates to wall-local space: {e}, using profile.location directly")
-                local_origin = profile.location
+                logger.debug(f"Could not transform opening coordinates to wall-local space: {e}, using profile.location with adjusted Z")
+                # Fallback: use profile location but adjust Z
+                local_origin = (
+                    profile.location[0] if len(profile.location) > 0 else 0.0,
+                    profile.location[1] if len(profile.location) > 1 else 0.0,
+                    opening_z_position
+                )
         else:
-            local_origin = profile.location
+            local_origin = (
+                profile.location[0] if len(profile.location) > 0 else 0.0,
+                profile.location[1] if len(profile.location) > 1 else 0.0,
+                opening_z_position
+            )
 
         filling.ObjectPlacement = self.model.create_entity(
             "IfcLocalPlacement",
@@ -977,8 +1156,8 @@ class IFCV2Builder:
         rectangle = (
             (0.0, 0.0),
             (profile.width, 0.0),
-            (profile.width, profile.thickness),
-            (0.0, profile.thickness),
+            (profile.width, opening_depth),
+            (0.0, opening_depth),
         )
         _, _, filling_shape = self._create_swept_solid(
             rectangle,
@@ -1003,15 +1182,27 @@ class IFCV2Builder:
         except Exception as e:
             logger.error(f"GUID generation failed for opening {profile.name or default_name}: {e}")
             raise IFCExportError(f"Critical IFC error: GUID generation failed for opening {profile.name or default_name}: {e}") from e
+        
+        # Set opening OverallWidth and OverallHeight
+        try:
+            opening.OverallWidth = float(profile.width)
+        except Exception as e:
+            logger.warning(f"Could not set OverallWidth for opening: {e}")
+        try:
+            opening.OverallHeight = float(profile.height)
+        except Exception as e:
+            logger.warning(f"Could not set OverallHeight for opening: {e}")
+        
         # Use same transformed coordinates for opening
         opening.ObjectPlacement = self.model.create_entity(
             "IfcLocalPlacement",
             PlacementRelTo=wall_placement,
             RelativePlacement=self._axis2placement(local_origin),
         )
+        # Opening depth = wall thickness (not window/door height!)
         _, _, opening_shape = self._create_swept_solid(
             rectangle,
-            depth=profile.height,
+            depth=opening_depth,  # CRITICAL: Use wall thickness, not profile.height
             direction=(0.0, 0.0, 1.0),
         )
         opening.Representation = self.model.create_entity(
@@ -1023,17 +1214,50 @@ class IFCV2Builder:
         ifcopenshell.api.run("void.add_opening", self.model, element=wall, opening=opening)
         ifcopenshell.api.run("opening.add_filling", self.model, opening=opening, filling=filling)
 
-        # Create property set
+        # Create property set with type-specific properties
         pset = ifcopenshell.api.run("pset.add_pset", self.model, product=filling, name=pset_name)
-        ifcopenshell.api.run(
-            "pset.edit_pset",
-            self.model,
-            pset=pset,
-            properties={
-                "IsExternal": bool(profile.is_external),
+        
+        if pset_name == "Pset_WindowCommon":
+            # Window-specific properties
+            window_props = {
+                "IsExternal": bool(profile.is_external),  # IfcBoolean
+                "UValue": float(STANDARDS["WINDOW_U_VALUE"]),  # IfcReal (W/m²K)
+                "GlazingAreaFraction": float(STANDARDS["WINDOW_GLASS_AREA_RATIO"]),  # IfcReal (0.8 = 80%)
+                "FrameDepth": float(STANDARDS["WINDOW_FRAME_DEPTH"]),  # IfcReal (0.09m)
+                "FrameThickness": float(STANDARDS["WINDOW_FRAME_WIDTH"]),  # IfcReal (0.07m)
                 "Reference": profile.name or default_name,
-            },
-        )
+            }
+            ifcopenshell.api.run(
+                "pset.edit_pset",
+                self.model,
+                pset=pset,
+                properties=window_props,
+            )
+        elif pset_name == "Pset_DoorCommon":
+            # Door-specific properties
+            door_props = {
+                "FireRating": STANDARDS["DOOR_FIRE_RATING"],  # IfcLabel ("T30")
+                "HandicapAccessible": STANDARDS["DOOR_HANDICAP_ACCESSIBLE"],  # IfcBoolean
+                "IsExternal": bool(profile.is_external),  # IfcBoolean
+                "Reference": profile.name or default_name,
+            }
+            ifcopenshell.api.run(
+                "pset.edit_pset",
+                self.model,
+                pset=pset,
+                properties=door_props,
+            )
+        else:
+            # Fallback for unknown pset types
+            ifcopenshell.api.run(
+                "pset.edit_pset",
+                self.model,
+                pset=pset,
+                properties={
+                    "IsExternal": bool(profile.is_external),
+                    "Reference": profile.name or default_name,
+                },
+            )
 
         # Assign quantities
         area = profile.width * profile.height
@@ -1316,8 +1540,81 @@ class IFCV2Builder:
 
         return covering
 
+    def _ensure_slab_material(self, slab: Any, thickness_m: float) -> None:
+        """Assign material layer set to slab.
+        
+        Args:
+            slab: IfcSlab entity
+            thickness_m: Slab thickness in meters
+        """
+        # Check if material already assigned
+        if hasattr(slab, "HasAssociations") and slab.HasAssociations:
+            for rel in slab.HasAssociations:
+                if rel.is_a("IfcRelAssociatesMaterial"):
+                    relating_material = getattr(rel, "RelatingMaterial", None)
+                    if relating_material and hasattr(relating_material, "ForLayerSet"):
+                        return  # Material already assigned
+        
+        # Get material configuration from mapping
+        material_name, default_thickness_mm, thermal_conductivity = self.MATERIAL_MAP.get(
+            "slab",
+            (STANDARDS["SLAB_MATERIAL"], STANDARDS["SLAB_THICKNESS"] * 1000.0, STANDARDS["MATERIAL_CONCRETE_THERMAL_CONDUCTIVITY"])
+        )
+        
+        # Use actual thickness if provided, otherwise use default
+        actual_thickness_m = thickness_m if thickness_m > 0 else (default_thickness_mm / 1000.0)
+        
+        # Create material
+        material = self._ensure_material(material_name, "Concrete")
+        
+        # Create material layer
+        material_layer = self.model.create_entity(
+            "IfcMaterialLayer",
+            Material=material,
+            LayerThickness=float(actual_thickness_m),
+        )
+        
+        # Create material layer set
+        material_set = self.model.create_entity(
+            "IfcMaterialLayerSet",
+            LayerSetName="Slab_Layers",
+            MaterialLayers=(material_layer,),
+        )
+        
+        # Create material layer set usage
+        material_layer_set_usage = self.model.create_entity(
+            "IfcMaterialLayerSetUsage",
+            ForLayerSet=material_set,
+            LayerSetDirection="AXIS3",  # For slabs, direction is vertical (Z-axis)
+            DirectionSense="POSITIVE",
+            OffsetFromReferenceLine=0.0,
+        )
+        
+        # Assign material via IfcRelAssociatesMaterial
+        try:
+            ifcopenshell.api.run(
+                "material.assign_material",
+                self.model,
+                products=[slab],
+                type="IfcMaterialLayerSetUsage",
+                material=material_layer_set_usage,
+            )
+        except Exception as api_exc:
+            # Fallback: create IfcRelAssociatesMaterial explicitly
+            logger.debug(f"API material.assign_material failed for slab, creating IfcRelAssociatesMaterial explicitly: {api_exc}")
+            associates = self.model.create_entity(
+                "IfcRelAssociatesMaterial",
+                GlobalId=ifcopenshell.guid.new(),
+                RelatingMaterial=material_layer_set_usage,
+                RelatedObjects=(slab,),
+            )
+            # Add to HasAssociations
+            existing = list(getattr(slab, "HasAssociations", []) or [])
+            existing.append(associates)
+            slab.HasAssociations = tuple(existing)
+
     def create_slab(self, profile: SlabProfile) -> Any:
-        """Create IfcSlab entity with uniform thickness."""
+        """Create IfcSlab entity with uniform thickness and material layer set."""
         if len(profile.points) < 3:
             raise ValueError("Slab profile requires at least three points")
         
@@ -1355,6 +1652,9 @@ class IFCV2Builder:
             "IfcProductDefinitionShape",
             Representations=(shape,),
         )
+
+        # Assign material layer set to slab
+        self._ensure_slab_material(slab, profile.thickness)
 
         pset = ifcopenshell.api.run("pset.add_pset", self.model, product=slab, name="Pset_SlabCommon")
         ifcopenshell.api.run(
@@ -1689,7 +1989,78 @@ class IFCV2Builder:
         except Exception as e:
             logger.warning(f"Failed to add provenance PropertySet: {e}")
 
+    def _verify_relations(self) -> None:
+        """Verify that all required IFC relations exist.
+        
+        Checks:
+        - IfcRelVoidsElement: Each opening must have exactly one void relation to a wall
+        - IfcRelFillsElement: Each opening must have exactly one fill relation to a door/window
+        - IfcRelContainedInSpatialStructure: All elements must be contained in storey
+        - IfcRelAssociatesMaterial: All walls and slabs must have material associations
+        - IfcRelDefinesByProperties: All property sets must be linked to entities
+        """
+        all_openings = self.model.by_type("IfcOpeningElement")
+        all_void_rels = self.model.by_type("IfcRelVoidsElement")
+        all_fill_rels = self.model.by_type("IfcRelFillsElement")
+        all_containment_rels = self.model.by_type("IfcRelContainedInSpatialStructure")
+        all_material_rels = self.model.by_type("IfcRelAssociatesMaterial")
+        all_property_rels = self.model.by_type("IfcRelDefinesByProperties")
+        
+        # Verify opening relations
+        opening_to_void = {}
+        opening_to_fill = {}
+        for rel in all_void_rels:
+            opening = getattr(rel, "RelatedOpeningElement", None)
+            if opening:
+                opening_to_void[opening] = rel
+        for rel in all_fill_rels:
+            opening = getattr(rel, "RelatingOpeningElement", None)
+            if opening:
+                opening_to_fill[opening] = rel
+        
+        missing_voids = [op for op in all_openings if op not in opening_to_void]
+        missing_fills = [op for op in all_openings if op not in opening_to_fill]
+        
+        if missing_voids:
+            logger.warning(f"Found {len(missing_voids)} openings without IfcRelVoidsElement")
+        if missing_fills:
+            logger.warning(f"Found {len(missing_fills)} openings without IfcRelFillsElement")
+        
+        # Verify containment relations
+        contained_elements = set()
+        for rel in all_containment_rels:
+            if getattr(rel, "RelatingStructure", None) == self.storey:
+                elements = getattr(rel, "RelatedElements", []) or []
+                contained_elements.update(elements)
+        
+        all_elements = set(self.walls + self.doors + self.windows + self.slabs)
+        missing_containment = all_elements - contained_elements
+        if missing_containment:
+            logger.warning(f"Found {len(missing_containment)} elements not contained in storey")
+        
+        # Verify material relations
+        elements_with_materials = set()
+        for rel in all_material_rels:
+            related = getattr(rel, "RelatedObjects", []) or []
+            elements_with_materials.update(related)
+        
+        all_walls_and_slabs = set(self.walls + self.slabs)
+        missing_materials = all_walls_and_slabs - elements_with_materials
+        if missing_materials:
+            logger.warning(f"Found {len(missing_materials)} walls/slabs without IfcRelAssociatesMaterial")
+        
+        # Verify property set relations (non-critical, just log)
+        psets_with_relations = set()
+        for rel in all_property_rels:
+            related = getattr(rel, "RelatedObjects", []) or []
+            psets_with_relations.update(related)
+        
+        logger.debug(f"Relations verification: {len(all_void_rels)} void relations, {len(all_fill_rels)} fill relations, "
+                    f"{len(all_containment_rels)} containment relations, {len(all_material_rels)} material relations, "
+                    f"{len(all_property_rels)} property relations")
+
     def finalize_relations(self) -> None:
+        """Finalize all IFC relations and verify completeness."""
         if self.spaces_created:
             existing = next(
                 (
@@ -1713,7 +2084,8 @@ class IFCV2Builder:
                     RelatedObjects=tuple(self.spaces_created),
                 )
 
-        elements = tuple({*self.walls, *self.doors, *self.windows})
+        # Include all elements: walls, doors, windows, and slabs
+        elements = tuple({*self.walls, *self.doors, *self.windows, *self.slabs})
         if elements:
             existing_containment = next(
                 (
@@ -1737,8 +2109,36 @@ class IFCV2Builder:
                     RelatingStructure=self.storey,
                 )
         
+        # Also include openings in containment (optional but recommended)
+        if self.openings:
+            existing_containment = next(
+                (
+                    rel
+                    for rel in self.model.by_type("IfcRelContainedInSpatialStructure")
+                    if getattr(rel, "RelatingStructure", None) == self.storey
+                ),
+                None,
+            )
+            if existing_containment:
+                related = list(getattr(existing_containment, "RelatedElements", []) or [])
+                for opening in self.openings:
+                    if opening not in related:
+                        related.append(opening)
+                existing_containment.RelatedElements = tuple(related)
+            else:
+                # If no containment relation exists yet, create one with openings
+                self.model.create_entity(
+                    "IfcRelContainedInSpatialStructure",
+                    GlobalId=ifcopenshell.guid.new(),
+                    RelatedElements=tuple(self.openings),
+                    RelatingStructure=self.storey,
+                )
+        
         # Create space boundaries for thermal calculations (HottCAD requirement)
         self._finalize_space_boundaries()
+        
+        # Verify all relations are complete
+        self._verify_relations()
 
 
 def _extract_primary_polygon(geom: Any) -> Polygon | None:
@@ -1794,9 +2194,19 @@ def _process_walls(
             if thicknesses:
                 raw_thickness_mm = sorted(thicknesses)[len(thicknesses) // 2]
             else:
-                raw_thickness_mm = 240.0 if is_ext_bool else 115.0
+                # Use standard thickness from config (convert m to mm)
+                raw_thickness_mm = (
+                    STANDARDS["WALL_EXTERNAL_THICKNESS"] * 1000.0 
+                    if is_ext_bool 
+                    else STANDARDS["WALL_INTERNAL_THICKNESS"] * 1000.0
+                )
         else:
-            raw_thickness_mm = 240.0 if is_ext_bool else 115.0
+            # Use standard thickness from config (convert m to mm)
+            raw_thickness_mm = (
+                STANDARDS["WALL_EXTERNAL_THICKNESS"] * 1000.0 
+                if is_ext_bool 
+                else STANDARDS["WALL_INTERNAL_THICKNESS"] * 1000.0
+            )
         
         # Snap to standard thickness
         uniform_thickness_mm = snap_thickness_mm(
@@ -1907,7 +2317,7 @@ def _process_spaces(
     builder: IFCV2Builder,
     spaces: Sequence[SpacePoly],
     storey_height_mm: float,
-    floor_thickness_mm: float = 200.0,
+    floor_thickness_mm: float = STANDARDS["SLAB_THICKNESS"] * 1000.0,  # Convert m to mm
 ) -> None:
     """Process spaces and create floor coverings for each space."""
     space_index = 0
@@ -2067,7 +2477,7 @@ def _write_ifc_v2_impl(
     storey_height_mm: float,
     door_height_mm: float,
     window_height_mm: float,
-    floor_thickness_mm: float = 200.0,
+    floor_thickness_mm: float = STANDARDS["SLAB_THICKNESS"] * 1000.0,  # Convert m to mm
     px_per_mm: float | None = None,
     wall_axes: Sequence[Any] | None = None,
     geometry_fidelity: str | None = None,
@@ -2238,7 +2648,7 @@ def write_ifc_v2(
     storey_height_mm: float,
     door_height_mm: float,
     window_height_mm: float,
-    floor_thickness_mm: float = 200.0,
+    floor_thickness_mm: float = STANDARDS["SLAB_THICKNESS"] * 1000.0,  # Convert m to mm
     px_per_mm: float | None = None,
     wall_axes: Sequence[Any] | None = None,
     geometry_fidelity: str | None = None,

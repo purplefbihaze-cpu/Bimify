@@ -200,6 +200,215 @@ def validate_before_export(
     return is_valid, warnings
 
 
+def validate_uuid_uniqueness(model: Any) -> list[str]:
+    """
+    Validate that all GlobalIds are unique.
+    
+    Args:
+        model: IFC model instance
+        
+    Returns:
+        List of validation warnings (empty if all UUIDs are unique)
+    """
+    warnings = []
+    
+    try:
+        all_guids = {}
+        duplicate_guids = []
+        
+        # Check all entities with GlobalId
+        for entity in model:
+            try:
+                guid = getattr(entity, "GlobalId", None)
+                if guid:
+                    if guid in all_guids:
+                        duplicate_guids.append((guid, entity.is_a(), getattr(entity, "Name", "unknown")))
+                        if guid not in [d[0] for d in duplicate_guids[:-1]]:
+                            # First duplicate - also add the original
+                            original_entity = all_guids[guid]
+                            duplicate_guids.insert(-1, (guid, original_entity.is_a(), getattr(original_entity, "Name", "unknown")))
+                    else:
+                        all_guids[guid] = entity
+            except Exception as e:
+                logger.debug(f"Error checking GlobalId for entity: {e}")
+                continue
+        
+        if duplicate_guids:
+            # Group duplicates by GUID
+            guid_groups = {}
+            for guid, entity_type, name in duplicate_guids:
+                if guid not in guid_groups:
+                    guid_groups[guid] = []
+                guid_groups[guid].append(f"{entity_type}({name})")
+            
+            for guid, entities in guid_groups.items():
+                warnings.append(f"Duplicate GlobalId {guid}: {', '.join(entities)}")
+    except Exception as e:
+        logger.warning(f"Error validating UUID uniqueness: {e}")
+        warnings.append(f"UUID uniqueness check failed: {e}")
+    
+    return warnings
+
+
+def validate_relations_completeness(model: Any) -> list[str]:
+    """
+    Validate that all required relations exist.
+    
+    Args:
+        model: IFC model instance
+        
+    Returns:
+        List of validation warnings (empty if all relations are complete)
+    """
+    warnings = []
+    
+    try:
+        all_openings = model.by_type("IfcOpeningElement")
+        all_void_rels = model.by_type("IfcRelVoidsElement")
+        all_fill_rels = model.by_type("IfcRelFillsElement")
+        
+        # Check opening relations
+        opening_to_void = {}
+        opening_to_fill = {}
+        
+        for rel in all_void_rels:
+            opening = getattr(rel, "RelatedOpeningElement", None)
+            if opening:
+                opening_to_void[opening] = rel
+        
+        for rel in all_fill_rels:
+            opening = getattr(rel, "RelatingOpeningElement", None)
+            if opening:
+                opening_to_fill[opening] = rel
+        
+        missing_voids = [op for op in all_openings if op not in opening_to_void]
+        missing_fills = [op for op in all_openings if op not in opening_to_fill]
+        
+        if missing_voids:
+            warnings.append(f"Found {len(missing_voids)} openings without IfcRelVoidsElement")
+            for op in missing_voids[:5]:  # Limit to first 5
+                warnings.append(f"  - Opening {getattr(op, 'Name', 'unknown')} ({getattr(op, 'GlobalId', 'unknown')})")
+        
+        if missing_fills:
+            warnings.append(f"Found {len(missing_fills)} openings without IfcRelFillsElement")
+            for op in missing_fills[:5]:  # Limit to first 5
+                warnings.append(f"  - Opening {getattr(op, 'Name', 'unknown')} ({getattr(op, 'GlobalId', 'unknown')})")
+    except Exception as e:
+        logger.warning(f"Error validating relations completeness: {e}")
+        warnings.append(f"Relations completeness check failed: {e}")
+    
+    return warnings
+
+
+def validate_material_assignments(model: Any) -> list[str]:
+    """
+    Validate that all walls and slabs have material assignments.
+    
+    Args:
+        model: IFC model instance
+        
+    Returns:
+        List of validation warnings (empty if all materials are assigned)
+    """
+    warnings = []
+    
+    try:
+        all_walls = model.by_type("IfcWallStandardCase")
+        all_slabs = model.by_type("IfcSlab")
+        all_material_rels = model.by_type("IfcRelAssociatesMaterial")
+        
+        # Build set of entities with materials
+        elements_with_materials = set()
+        for rel in all_material_rels:
+            related = getattr(rel, "RelatedObjects", []) or []
+            elements_with_materials.update(related)
+        
+        # Check walls
+        missing_material_walls = [w for w in all_walls if w not in elements_with_materials]
+        if missing_material_walls:
+            warnings.append(f"Found {len(missing_material_walls)} walls without IfcRelAssociatesMaterial")
+            for wall in missing_material_walls[:5]:  # Limit to first 5
+                warnings.append(f"  - Wall {getattr(wall, 'Name', 'unknown')} ({getattr(wall, 'GlobalId', 'unknown')})")
+        
+        # Check slabs
+        missing_material_slabs = [s for s in all_slabs if s not in elements_with_materials]
+        if missing_material_slabs:
+            warnings.append(f"Found {len(missing_material_slabs)} slabs without IfcRelAssociatesMaterial")
+            for slab in missing_material_slabs[:5]:  # Limit to first 5
+                warnings.append(f"  - Slab {getattr(slab, 'Name', 'unknown')} ({getattr(slab, 'GlobalId', 'unknown')})")
+    except Exception as e:
+        logger.warning(f"Error validating material assignments: {e}")
+        warnings.append(f"Material assignment check failed: {e}")
+    
+    return warnings
+
+
+def validate_storey_containment(model: Any) -> list[str]:
+    """
+    Validate that all elements are contained in a storey.
+    
+    Args:
+        model: IFC model instance
+        
+    Returns:
+        List of validation warnings (empty if all elements are contained)
+    """
+    warnings = []
+    
+    try:
+        all_storeys = model.by_type("IfcBuildingStorey")
+        if not all_storeys:
+            warnings.append("No IfcBuildingStorey found - cannot validate containment")
+            return warnings
+        
+        all_containment_rels = model.by_type("IfcRelContainedInSpatialStructure")
+        
+        # Build set of contained elements
+        contained_elements = set()
+        for rel in all_containment_rels:
+            structure = getattr(rel, "RelatingStructure", None)
+            if structure and structure in all_storeys:
+                elements = getattr(rel, "RelatedElements", []) or []
+                contained_elements.update(elements)
+        
+        # Check walls
+        all_walls = model.by_type("IfcWallStandardCase")
+        missing_walls = [w for w in all_walls if w not in contained_elements]
+        if missing_walls:
+            warnings.append(f"Found {len(missing_walls)} walls not contained in storey")
+            for wall in missing_walls[:5]:  # Limit to first 5
+                warnings.append(f"  - Wall {getattr(wall, 'Name', 'unknown')} ({getattr(wall, 'GlobalId', 'unknown')})")
+        
+        # Check doors
+        all_doors = model.by_type("IfcDoor")
+        missing_doors = [d for d in all_doors if d not in contained_elements]
+        if missing_doors:
+            warnings.append(f"Found {len(missing_doors)} doors not contained in storey")
+            for door in missing_doors[:5]:  # Limit to first 5
+                warnings.append(f"  - Door {getattr(door, 'Name', 'unknown')} ({getattr(door, 'GlobalId', 'unknown')})")
+        
+        # Check windows
+        all_windows = model.by_type("IfcWindow")
+        missing_windows = [w for w in all_windows if w not in contained_elements]
+        if missing_windows:
+            warnings.append(f"Found {len(missing_windows)} windows not contained in storey")
+            for window in missing_windows[:5]:  # Limit to first 5
+                warnings.append(f"  - Window {getattr(window, 'Name', 'unknown')} ({getattr(window, 'GlobalId', 'unknown')})")
+        
+        # Check slabs
+        all_slabs = model.by_type("IfcSlab")
+        missing_slabs = [s for s in all_slabs if s not in contained_elements]
+        if missing_slabs:
+            warnings.append(f"Found {len(missing_slabs)} slabs not contained in storey")
+            for slab in missing_slabs[:5]:  # Limit to first 5
+                warnings.append(f"  - Slab {getattr(slab, 'Name', 'unknown')} ({getattr(slab, 'GlobalId', 'unknown')})")
+    except Exception as e:
+        logger.warning(f"Error validating storey containment: {e}")
+        warnings.append(f"Storey containment check failed: {e}")
+    
+    return warnings
+
+
 def validate_ifc_file(ifc_path: str) -> tuple[bool, list[str]]:
     """
     Validate IFC file after export.
@@ -273,6 +482,38 @@ def validate_ifc_file(ifc_path: str) -> tuple[bool, list[str]]:
                     logger.debug(f"Error checking wall representation: {e}")
         except Exception as e:
             logger.debug(f"Error checking walls: {e}")
+        
+        # NEW: Validate UUID uniqueness
+        try:
+            uuid_warnings = validate_uuid_uniqueness(model)
+            warnings.extend(uuid_warnings)
+        except Exception as e:
+            logger.warning(f"Error validating UUID uniqueness: {e}")
+            warnings.append(f"UUID uniqueness validation error: {e}")
+        
+        # NEW: Validate relations completeness
+        try:
+            relations_warnings = validate_relations_completeness(model)
+            warnings.extend(relations_warnings)
+        except Exception as e:
+            logger.warning(f"Error validating relations completeness: {e}")
+            warnings.append(f"Relations completeness validation error: {e}")
+        
+        # NEW: Validate material assignments
+        try:
+            material_warnings = validate_material_assignments(model)
+            warnings.extend(material_warnings)
+        except Exception as e:
+            logger.warning(f"Error validating material assignments: {e}")
+            warnings.append(f"Material assignment validation error: {e}")
+        
+        # NEW: Validate storey containment
+        try:
+            containment_warnings = validate_storey_containment(model)
+            warnings.extend(containment_warnings)
+        except Exception as e:
+            logger.warning(f"Error validating storey containment: {e}")
+            warnings.append(f"Storey containment validation error: {e}")
         
     finally:
         try:
