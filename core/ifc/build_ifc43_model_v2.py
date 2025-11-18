@@ -13,6 +13,7 @@ import ifcopenshell.api
 import ifcopenshell.entity_instance
 import ifcopenshell.guid
 from shapely.geometry import MultiPolygon, Polygon
+from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 from shapely.strtree import STRtree
 
@@ -33,6 +34,7 @@ from core.reconstruct.spaces import SpacePoly
 from core.ifc.geometry_utils import snap_thickness_mm, find_nearest_wall
 from core.ifc.ifc_v2_validator import validate_before_export, validate_ifc_file
 from config.ifc_standards import STANDARDS
+from core.geometry.contract import MIN_OPENING_DEPTH
 
 # Import simple input models for cleaner API
 try:
@@ -338,6 +340,9 @@ class IFCV2Builder:
         coords = list(values) + [0.0] * (3 - len(values))
         return self.model.create_entity("IfcCartesianPoint", Coordinates=tuple(float(c) for c in coords[:3]))
 
+    def _create_ifccartesianpoint(self, x: float, y: float, z: float = 0.0) -> Any:
+        return self.model.create_entity("IfcCartesianPoint", Coordinates=(float(x), float(y), float(z)))
+
     def _axis2placement(self, location: Sequence[float]) -> Any:
         return self.model.create_entity(
             "IfcAxis2Placement3D",
@@ -601,54 +606,214 @@ class IFCV2Builder:
         
         return axis_context
 
-    def _create_wall_axis_representation(self, wall_points: Sequence[Sequence[float]]) -> Any | None:
-        """Create 2D axis representation for wall (polyline from start to end).
-        
-        Args:
-            wall_points: List of wall corner points
-            
-        Returns:
-            IfcShapeRepresentation with Axis identifier, or None if creation fails
-        """
+    def _create_wall_axis_representation(
+        self,
+        wall_points: Sequence[Sequence[float]],
+        *,
+        image_height: float | None = None,  # kept for backward compatibility (unused)
+    ) -> Any | None:
+        """Create a minimal 2D axis representation for IfcWallStandardCase."""
+        if len(wall_points) < 2:
+            logger.error("Wall axis requires at least 2 points")
+            return None
+
+        def _unique_point(points: Sequence[Sequence[float]], fallback_index: int) -> Tuple[float, float]:
+            idx = min(max(fallback_index, 0), len(points) - 1)
+            point = points[idx]
+            if len(point) < 2:
+                raise ValueError("Wall axis point missing coordinates")
+            return float(point[0]), float(point[1])
+
         try:
-            if len(wall_points) < 2:
+            # Prefer axis aligned with longest edge of the polygon's minimum rotated rectangle
+            try:
+                from shapely.geometry import Polygon as _Polygon
+                poly = _Polygon(wall_points)
+                rect = poly.minimum_rotated_rectangle if poly.is_valid and not poly.is_empty else None
+            except Exception:
+                rect = None
+
+            if rect is not None and hasattr(rect, "exterior"):
+                rcoords = list(rect.exterior.coords)[:-1]
+                if len(rcoords) >= 4:
+                    # Find the longest edge of rectangle
+                    max_len = 0.0
+                    edge = (rcoords[0], rcoords[1])
+                    for i in range(4):
+                        p0 = rcoords[i]
+                        p1 = rcoords[(i + 1) % 4]
+                        dx = p1[0] - p0[0]
+                        dy = p1[1] - p0[1]
+                        L = (dx * dx + dy * dy) ** 0.5
+                        if L > max_len:
+                            max_len = L
+                            edge = (p0, p1)
+                    start_xy = (float(edge[0][0]), float(edge[0][1]))
+                    end_xy = (float(edge[1][0]), float(edge[1][1]))
+                else:
+                    start_xy = _unique_point(wall_points, 0)
+                    end_xy = _unique_point(wall_points, 1 if len(wall_points) > 1 else len(wall_points) - 1)
+            else:
+                start_xy = _unique_point(wall_points, 0)
+                end_xy = _unique_point(wall_points, 1 if len(wall_points) > 1 else len(wall_points) - 1)
+
+            if start_xy == end_xy and len(wall_points) > 2:
+                end_xy = _unique_point(wall_points, len(wall_points) - 1)
+
+            if start_xy == end_xy:
+                logger.error("Wall axis start and end points coincide; invalid axis geometry")
                 return None
-            
-            # Calculate wall length from first two points
-            p1 = wall_points[0]
-            p2 = wall_points[1]
-            wall_length = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
-            
-            if wall_length <= 0:
-                return None
-            
-            # Get or create axis context
-            axis_context = self._ensure_axis_context()
-            
-            # Create 2D points for axis polyline: (0,0) to (wall_length, 0)
-            # This represents the wall axis in the wall's local coordinate system
-            start_point = self.model.create_entity("IfcCartesianPoint", Coordinates=(0.0, 0.0))
-            end_point = self.model.create_entity("IfcCartesianPoint", Coordinates=(float(wall_length), 0.0))
-            
-            # Create 2D polyline
-            axis_polyline = self.model.create_entity(
+
+            start_point = self._create_ifccartesianpoint(start_xy[0], start_xy[1])
+            end_point = self._create_ifccartesianpoint(end_xy[0], end_xy[1])
+
+            polyline = self.model.create_entity(
                 "IfcPolyline",
                 Points=(start_point, end_point),
             )
-            
-            # Create axis representation
+
+            axis_context = self._ensure_axis_context()
             axis_representation = self.model.create_entity(
                 "IfcShapeRepresentation",
                 ContextOfItems=axis_context,
                 RepresentationIdentifier="Axis",
                 RepresentationType="Curve2D",
-                Items=(axis_polyline,),
+                Items=(polyline,),
             )
-            
+
             return axis_representation
-        except Exception as e:
-            logger.warning(f"Failed to create wall axis representation: {e}")
+        except Exception as exc:
+            logger.error("Failed to create wall axis representation: %s", exc)
             return None
+
+    def _create_minimal_axis_fallback(self) -> Any:
+        start_point = self._create_ifccartesianpoint(0.0, 0.0)
+        end_point = self._create_ifccartesianpoint(1.0, 0.0)
+        polyline = self.model.create_entity(
+            "IfcPolyline",
+            Points=(start_point, end_point),
+        )
+        axis_context = self._ensure_axis_context()
+        return self.model.create_entity(
+            "IfcShapeRepresentation",
+            ContextOfItems=axis_context,
+            RepresentationIdentifier="Axis",
+            RepresentationType="Curve",
+            Items=(polyline,),
+        )
+
+    def _validate_before_export(self) -> None:
+        """Validate critical IFC entities before writing the file."""
+        errors: list[str] = []
+
+        if not getattr(self, "context", None):
+            errors.append("IfcGeometricRepresentationContext fehlt")
+
+        if not getattr(self, "storey", None):
+            errors.append("IfcBuildingStorey fehlt")
+
+        walls = getattr(self, "walls", [])
+        openings = getattr(self, "openings", [])
+        if not walls:
+            errors.append("Keine Wände erzeugt – IFC-Modell wird nicht geschrieben")
+
+        if openings and not walls:
+            errors.append("Öffnungen vorhanden, aber keine Wände – ungültiges Modell")
+
+        for wall in walls:
+            representation = getattr(wall, "Representation", None)
+            if not representation:
+                errors.append(f"Wall {getattr(wall, 'GlobalId', 'unbekannt')} hat keine Representation")
+                continue
+
+            reps = getattr(representation, "Representations", None) or []
+            has_axis = any(
+                getattr(rep, "RepresentationIdentifier", None) == "Axis"
+                for rep in reps
+            )
+            if not has_axis:
+                errors.append(f"Wall {getattr(wall, 'GlobalId', 'unbekannt')} hat keine Axis-Representation")
+
+        if errors:
+            raise IFCExportError(
+                "Validierung vor Export fehlgeschlagen: " + ", ".join(errors)
+            )
+
+        logger.info("Pre-Export Validierung erfolgreich abgeschlossen")
+
+    def _validate_after_export(self) -> None:
+        """Perform lightweight validations on the in-memory IFC model after export."""
+        if not getattr(self, "model", None):
+            logger.warning("Kein IFC-Modell für Post-Export-Validierung verfügbar")
+            return
+
+        try:
+            walls = list(self.model.by_type("IfcWallStandardCase"))
+        except Exception:
+            walls = []
+        try:
+            openings = list(self.model.by_type("IfcOpeningElement"))
+        except Exception:
+            openings = []
+        try:
+            doors = list(self.model.by_type("IfcDoor"))
+        except Exception:
+            doors = []
+        try:
+            windows = list(self.model.by_type("IfcWindow"))
+        except Exception:
+            windows = []
+
+        logger.info(
+            "IFC Export Summary: %d Walls, %d Openings, %d Doors, %d Windows",
+            len(walls),
+            len(openings),
+            len(doors),
+            len(windows),
+        )
+
+        for opening in openings:
+            fills = getattr(opening, "HasFillings", None)
+            if not fills:
+                logger.warning(
+                    "Opening %s (%s) hat keine Filling-Relation",
+                    getattr(opening, "Name", "unknown"),
+                    getattr(opening, "GlobalId", "unknown"),
+                )
+
+        try:
+            import ifcopenshell.validate  # type: ignore
+            import io
+            from contextlib import redirect_stdout
+
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                ifcopenshell.validate.validate(self.model)
+            logger.info("IFC Schema-Validierung (in-memory) erfolgreich")
+        except ImportError:
+            logger.debug("ifcopenshell.validate nicht verfügbar – Schema-Validierung übersprungen")
+        except Exception as exc:
+            logger.error("IFC Schema-Validierung fehlgeschlagen: %s", exc)
+
+    def validate_ifc_file(self, filepath: str) -> None:
+        """Validate exported IFC file using ifcopenshell.validate if available."""
+        try:
+            import ifcopenshell.validate  # type: ignore
+        except ImportError:
+            logger.debug("ifcopenshell.validate not available; skipping validation")
+            return
+
+        try:
+            logger.info("=== IFC VALIDATION START ===")
+            ifcopenshell.validate.validate(filepath)
+            logger.info("=== IFC VALIDATION PASSED ===")
+        except Exception as exc:
+            logger.error("IFC VALIDATION FAILED: %s", exc)
+            try:
+                with open("ifc_validation_errors.log", "w", encoding="utf-8") as log_file:
+                    log_file.write(str(exc))
+            except Exception as log_exc:
+                logger.debug("Failed to write validation log: %s", log_exc)
 
     def _create_swept_solid(
         self,
@@ -888,8 +1053,29 @@ class IFCV2Builder:
             direction=(0.0, 0.0, 1.0),
         )
         
+        if self.context is None:
+            raise ValueError("CRITICAL: self.context is None! Viewer will crash.")
+
         # Create axis representation (2D polyline from start to end point)
-        axis_representation = self._create_wall_axis_representation(wall_points)
+        axis_representation = self._create_wall_axis_representation(
+            wall_points,
+            image_height=getattr(self, "image_height", getattr(self, "default_image_height", None)),
+        )
+        if axis_representation is None:
+            logger.error(
+                "AXIS REPRESENTATION IS NONE - VIEWER WILL CRASH! Providing fallback for wall %s",
+                profile.name or "Unnamed",
+            )
+            logger.error("Wall points: %s", wall_points)
+            axis_representation = self._create_minimal_axis_fallback()
+        else:
+            logger.info(
+                "SUCCESS: Created axis representation for wall %s",
+                profile.name or "Unnamed",
+            )
+            logger.debug("Axis rep: %s", axis_representation)
+            logger.debug("Axis rep items: %s", getattr(axis_representation, "Items", None))
+            logger.debug("Axis rep context: %s", getattr(axis_representation, "ContextOfItems", None))
         
         # Combine Body and Axis representations
         representations = [shape_representation]
@@ -1062,6 +1248,9 @@ class IFCV2Builder:
         Returns:
             Tuple of (filling_entity, opening_entity)
         """
+        if wall is None:
+            raise IFCExportError("Cannot create opening/filling without a host wall")
+
         # Create filling entity (door or window)
         filling = ifcopenshell.api.run(
             "root.create_entity",
@@ -1128,6 +1317,10 @@ class IFCV2Builder:
             # For doors: opening depth = wall thickness, position at OKFF (0.0m)
             opening_depth = wall_thickness_m
             opening_z_position = 0.0
+        try:
+            opening_depth = max(float(opening_depth), float(MIN_OPENING_DEPTH))
+        except Exception:
+            opening_depth = float(MIN_OPENING_DEPTH)
         
         # Berechne Opening-Placement RELATIV zur Wand
         # Calculate opening placement relative to wall's local coordinate system
@@ -1178,14 +1371,17 @@ class IFCV2Builder:
             (profile.width, opening_depth),
             (0.0, opening_depth),
         )
+
+        # Use a thin panel for door/window filling geometry instead of full height extrusion
+        height = float(profile.height)
+        panel_depth = height * 0.05 if height > 0 else 0.05
+        panel_depth = min(panel_depth, 0.05)
+        panel_depth = max(panel_depth, 0.01)
+
         _, _, filling_shape = self._create_swept_solid(
             rectangle,
-            depth=profile.height,
+            depth=panel_depth,
             direction=(0.0, 0.0, 1.0),
-        )
-        filling.Representation = self.model.create_entity(
-            "IfcProductDefinitionShape",
-            Representations=(filling_shape,),
         )
 
         # Create opening element
@@ -1280,14 +1476,14 @@ class IFCV2Builder:
 
         # Assign quantities
         area = profile.width * profile.height
-        volume = area * profile.thickness
+        volume = area * panel_depth
         self._assign_quantities(
             filling,
             "BaseQuantities",
             [
                 ("Width", "IfcQuantityLength", profile.width),
                 ("Height", "IfcQuantityLength", profile.height),
-                ("Depth", "IfcQuantityLength", profile.thickness),
+                ("Depth", "IfcQuantityLength", panel_depth),
                 ("GrossArea", "IfcQuantityArea", area),
                 ("GrossVolume", "IfcQuantityVolume", volume),
             ],
@@ -1701,6 +1897,54 @@ class IFCV2Builder:
         self.slabs.append(slab)
         return slab
 
+    def create_floor_slab(
+        self,
+        polygon_points: Sequence[Sequence[float]],
+        thickness: float = 0.2,
+    ) -> Any:
+        """Create an IfcSlab from detected floor polygon."""
+        if len(polygon_points) < 3:
+            raise ValueError("Floor slab requires at least three points")
+
+        slab = ifcopenshell.api.run(
+            "root.create_entity",
+            self.model,
+            ifc_class="IfcSlab",
+            name="Floor Slab",
+        )
+
+        try:
+            slab.PredefinedType = "FLOOR"
+        except Exception as exc:
+            logger.debug("Could not set predefined type for floor slab: %s", exc)
+
+        ifcopenshell.api.run(
+            "spatial.assign_container",
+            self.model,
+            products=[slab],
+            relating_structure=self.storey,
+        )
+
+        slab.ObjectPlacement = self.model.create_entity(
+            "IfcLocalPlacement",
+            PlacementRelTo=self.storey.ObjectPlacement,
+            RelativePlacement=self._axis2placement((0.0, 0.0, 0.0)),
+        )
+
+        _, _, shape_rep = self._create_swept_solid(
+            polygon_points,
+            depth=float(thickness),
+            direction=(0.0, 0.0, -1.0),
+        )
+
+        slab.Representation = self.model.create_entity(
+            "IfcProductDefinitionShape",
+            Representations=(shape_rep,),
+        )
+
+        self.slabs.append(slab)
+        return slab
+
     def _calculate_boundary_area(self, space: Any, building_element: Any) -> float:
         """Calculate intersection area between space and building element.
         
@@ -1909,7 +2153,7 @@ class IFCV2Builder:
         
         # Build spatial index for walls using stored polygons (O(n log n) construction, O(log n) queries)
         if not self.wall_polygons or len(self.wall_polygons) != len(self.walls):
-            # Fallback if polygons not stored: create boundaries for all walls
+            # Fallback: create boundaries for all walls
             logger.warning("Wall polygons not available for spatial indexing, using fallback")
             for space in self.spaces_created:
                 for wall in self.walls:
@@ -2378,7 +2622,7 @@ class IFCV2Builder:
                     for rel in self.model.by_type("IfcRelAggregates")
                     if getattr(rel, "RelatingObject", None) == self.storey
                 ),
-                None,
+                None
             )
             if existing:
                 related = list(getattr(existing, "RelatedObjects", []) or [])
@@ -2403,7 +2647,7 @@ class IFCV2Builder:
                     for rel in self.model.by_type("IfcRelContainedInSpatialStructure")
                     if getattr(rel, "RelatingStructure", None) == self.storey
                 ),
-                None,
+                None
             )
             if existing_containment:
                 related = list(getattr(existing_containment, "RelatedElements", []) or [])
@@ -2427,7 +2671,7 @@ class IFCV2Builder:
                     for rel in self.model.by_type("IfcRelContainedInSpatialStructure")
                     if getattr(rel, "RelatingStructure", None) == self.storey
                 ),
-                None,
+                None
             )
             if existing_containment:
                 related = list(getattr(existing_containment, "RelatedElements", []) or [])
@@ -2470,78 +2714,112 @@ def _polygon_to_meters(poly: Polygon) -> Polygon:
 def _process_walls(
     builder: IFCV2Builder,
     normalized: Sequence[NormalizedDet],
-    wall_axes: Sequence[Any],
+    wall_axes: Sequence[Any] | None,
     storey_height_mm: float,
     px_per_mm: float | None,
 ) -> List[Tuple[Any, Polygon, bool, float]]:
     """Process walls and return wall records with geometry."""
+    wall_axes = wall_axes or []
+
+    # NormalizedDet type values can vary (e.g. "WALL_EXT", "wall", etc.)
+    wall_labels = {"WALL", "WALL_EXT", "WALL_INT", "EXTERNAL_WALL", "INTERNAL_WALL"}
+
     # Create mapping from source index to wall axis info
     axis_by_source: Dict[int, List[Any]] = {}
     for axis_info in wall_axes:
-        source_idx = axis_info.source_index
-        if source_idx not in axis_by_source:
-            axis_by_source[source_idx] = []
-        axis_by_source[source_idx].append(axis_info)
+        source_idx = getattr(axis_info, "source_index", None)
+        if source_idx is None:
+            continue
+        axis_by_source.setdefault(source_idx, []).append(axis_info)
 
     wall_records: List[Tuple[Any, Polygon, bool, float]] = []
     wall_index = 0
-    wall_detections = [det for det in normalized if det.type == "WALL"]
-    
+
+    def _is_wall_detection(det: NormalizedDet) -> bool:
+        det_type = (getattr(det, "type", "") or "").upper()
+        return det_type in wall_labels
+
+    wall_detections = [det for det in normalized if _is_wall_detection(det)]
+
     for source_index, det in enumerate(wall_detections):
-        if det.geom is None:
-            continue
-        poly = _extract_primary_polygon(det.geom)
-        if poly is None or poly.is_empty:
-            continue
-        
-        # Get uniform thickness from wall axes
-        axes_for_wall = axis_by_source.get(source_index, [])
-        # Ensure boolean conversion to avoid numpy array boolean ambiguity
-        is_ext_bool = bool(det.is_external) if det.is_external is not None else False
-        if axes_for_wall:
-            # Use median thickness from axes
-            thicknesses = [ax.width_mm for ax in axes_for_wall if ax.width_mm > 0]
-            if thicknesses:
-                raw_thickness_mm = sorted(thicknesses)[len(thicknesses) // 2]
+        try:
+            if det.geom is None:
+                logger.debug("Skipping wall detection without geometry (id=%s)", getattr(det, "id", None))
+                continue
+
+            poly = _extract_primary_polygon(det.geom)
+            if poly is None or poly.is_empty:
+                logger.debug("Skipping wall with empty/invalid polygon (id=%s)", getattr(det, "id", None))
+                continue
+
+            coords = list(poly.exterior.coords)[:-1]
+            if len(coords) < 3:
+                logger.debug("Skipping wall with <3 coordinates (id=%s)", getattr(det, "id", None))
+                continue
+
+            axes_for_wall = axis_by_source.get(source_index, [])
+            is_ext_bool = bool(det.is_external) if det.is_external is not None else False
+
+            if axes_for_wall:
+                thicknesses = [float(ax.width_mm) for ax in axes_for_wall if getattr(ax, "width_mm", 0) > 0]
+                if thicknesses:
+                    raw_thickness_mm = sorted(thicknesses)[len(thicknesses) // 2]
+                else:
+                    raw_thickness_mm = STANDARDS["WALL_EXTERNAL_THICKNESS"] * 1000.0 if is_ext_bool else STANDARDS["WALL_INTERNAL_THICKNESS"] * 1000.0
             else:
-                # Use standard thickness from config (convert m to mm)
-                raw_thickness_mm = (
-                    STANDARDS["WALL_EXTERNAL_THICKNESS"] * 1000.0 
-                    if is_ext_bool 
-                    else STANDARDS["WALL_INTERNAL_THICKNESS"] * 1000.0
-                )
-        else:
-            # Use standard thickness from config (convert m to mm)
-            raw_thickness_mm = (
-                STANDARDS["WALL_EXTERNAL_THICKNESS"] * 1000.0 
-                if is_ext_bool 
-                else STANDARDS["WALL_INTERNAL_THICKNESS"] * 1000.0
+                raw_thickness_mm = STANDARDS["WALL_EXTERNAL_THICKNESS"] * 1000.0 if is_ext_bool else STANDARDS["WALL_INTERNAL_THICKNESS"] * 1000.0
+
+            uniform_thickness_mm = snap_thickness_mm(
+                raw_thickness_mm,
+                is_external=is_ext_bool,
             )
-        
-        # Snap to standard thickness
-        uniform_thickness_mm = snap_thickness_mm(
-            raw_thickness_mm,
-            is_external=bool(det.is_external),
-        )
-        uniform_thickness_m = uniform_thickness_mm / 1000.0
-        
-        poly_m = _polygon_to_meters(poly)
-        coords = list(poly_m.exterior.coords)[:-1]
-        wall_index += 1
-        wall = builder.create_wall(
-            WallProfile(
-                points=coords,
-                height=storey_height_mm / 1000.0,
+            uniform_thickness_m = uniform_thickness_mm / 1000.0
+
+            poly_m = _polygon_to_meters(poly)
+            coords_m = list(poly_m.exterior.coords)[:-1]
+            if len(coords_m) < 3:
+                # Fallback: use minimum rotated rectangle when polygon is degenerate
+                try:
+                    rect = poly.minimum_rotated_rectangle
+                    rect_m = _polygon_to_meters(rect)
+                    rect_coords_m = list(rect_m.exterior.coords)[:-1]
+                    if len(rect_coords_m) >= 4:
+                        coords_m = rect_coords_m
+                        poly_m = rect_m
+                        logger.debug("Using rotated rectangle fallback for wall (id=%s)", getattr(det, "id", None))
+                    else:
+                        logger.debug("Skipping wall (id=%s) after meter conversion; insufficient coords (even after rectangle)", getattr(det, "id", None))
+                        continue
+                except Exception as rect_exc:
+                    logger.debug("Skipping wall (id=%s); rectangle fallback failed: %s", getattr(det, "id", None), rect_exc)
+                    continue
+
+            wall_index += 1
+            profile = WallProfile(
+                points=coords_m,
+                height=max(storey_height_mm, 0.0) / 1000.0,
                 uniform_thickness_m=uniform_thickness_m,
                 name=f"Wand-{wall_index:03d}",
-                is_external=bool(det.is_external),
-                preserve_exact_geometry=True,  # Preserve exact geometry by default
+                is_external=is_ext_bool,
+                preserve_exact_geometry=True,
             )
-        )
-        wall_records.append((wall, poly_m, bool(det.is_external), uniform_thickness_mm))
-        # Store wall polygon for spatial queries
-        builder.wall_polygons.append(poly_m)
-    
+
+            try:
+                wall_entity = builder.create_wall(profile)
+            except Exception as wall_exc:
+                logger.error("Failed to create wall entity for detection %s: %s", getattr(det, "id", None), wall_exc, exc_info=True)
+                continue
+
+            wall_records.append((wall_entity, poly_m, is_ext_bool, uniform_thickness_mm))
+            builder.wall_polygons.append(poly_m)
+
+        except Exception as det_exc:
+            logger.error("Unexpected error while processing wall detection %s: %s", getattr(det, "id", None), det_exc, exc_info=True)
+            continue
+
+    if not wall_records:
+        logger.warning("No walls were created from %d wall detections", len(wall_detections))
+
     return wall_records
 
 
@@ -2554,6 +2832,10 @@ def _process_doors(
     wall_geoms: List[Polygon],
 ) -> None:
     """Process doors and attach them to nearest walls."""
+    if not wall_records:
+        logger.warning("Skipping door processing because no wall records are available")
+        return
+
     door_index = 0
     door_height_m = door_height_mm / 1000.0
     for det in normalized:
@@ -2565,11 +2847,43 @@ def _process_doors(
         poly_m = _polygon_to_meters(poly)
         wall_info = find_nearest_wall(poly_m, wall_records, wall_index_tree, wall_geoms)
         if wall_info is None:
+            logger.debug("No wall found for door detection %s", getattr(det, "id", None))
             continue
         wall_entity, wall_geom, wall_external, _wall_thickness = wall_info
         width, thickness, origin = _rect_dimensions(poly_m)
         if width <= 0 or thickness <= 0:
             continue
+        try:
+            wcoords = list(wall_geom.exterior.coords)[:-1]
+            if len(wcoords) >= 2:
+                max_len = 0.0
+                seg = (wcoords[0], wcoords[1])
+                for i in range(len(wcoords)):
+                    p0 = wcoords[i]
+                    p1 = wcoords[(i + 1) % len(wcoords)]
+                    dx = p1[0] - p0[0]
+                    dy = p1[1] - p0[1]
+                    L = (dx * dx + dy * dy) ** 0.5
+                    if L > max_len:
+                        max_len = L
+                        seg = (p0, p1)
+                p0, p1 = seg
+                dx = p1[0] - p0[0]
+                dy = p1[1] - p0[1]
+                L = (dx * dx + dy * dy) ** 0.5 or 1.0
+                vx = origin[0] - p0[0]
+                vy = origin[1] - p0[1]
+                t = (vx * dx + vy * dy) / (L * L)
+                margin = min(max_len * 0.1, max(0.05, width * 0.6))
+                t = max(margin / L, min(1.0 - margin / L, t))
+                proj_x = p0[0] + t * dx
+                proj_y = p0[1] + t * dy
+                origin = (proj_x, proj_y, 0.0)
+                max_width = max(0.1, max_len - 2.0 * margin)
+                if width > max_width:
+                    width = max_width
+        except Exception:
+            pass
         door_index += 1
         builder.create_door(
             wall_entity,
@@ -2593,6 +2907,10 @@ def _process_windows(
     wall_geoms: List[Polygon],
 ) -> None:
     """Process windows and attach them to nearest walls."""
+    if not wall_records:
+        logger.warning("Skipping window processing because no wall records are available")
+        return
+
     window_index = 0
     window_height_m = window_height_mm / 1000.0
     for det in normalized:
@@ -2604,11 +2922,43 @@ def _process_windows(
         poly_m = _polygon_to_meters(poly)
         wall_info = find_nearest_wall(poly_m, wall_records, wall_index_tree, wall_geoms)
         if wall_info is None:
+            logger.debug("No wall found for window detection %s", getattr(det, "id", None))
             continue
         wall_entity, wall_geom, wall_external, _wall_thickness = wall_info
         width, thickness, origin = _rect_dimensions(poly_m)
         if width <= 0 or thickness <= 0:
             continue
+        try:
+            wcoords = list(wall_geom.exterior.coords)[:-1]
+            if len(wcoords) >= 2:
+                max_len = 0.0
+                seg = (wcoords[0], wcoords[1])
+                for i in range(len(wcoords)):
+                    p0 = wcoords[i]
+                    p1 = wcoords[(i + 1) % len(wcoords)]
+                    dx = p1[0] - p0[0]
+                    dy = p1[1] - p0[1]
+                    L = (dx * dx + dy * dy) ** 0.5
+                    if L > max_len:
+                        max_len = L
+                        seg = (p0, p1)
+                p0, p1 = seg
+                dx = p1[0] - p0[0]
+                dy = p1[1] - p0[1]
+                L = (dx * dx + dy * dy) ** 0.5 or 1.0
+                vx = origin[0] - p0[0]
+                vy = origin[1] - p0[1]
+                t = (vx * dx + vy * dy) / (L * L)
+                margin = min(max_len * 0.1, max(0.05, width * 0.6))
+                t = max(margin / L, min(1.0 - margin / L, t))
+                proj_x = p0[0] + t * dx
+                proj_y = p0[1] + t * dy
+                origin = (proj_x, proj_y, 0.0)
+                max_width = max(0.1, max_len - 2.0 * margin)
+                if width > max_width:
+                    width = max_width
+        except Exception:
+            pass
         window_index += 1
         builder.create_window(
             wall_entity,
@@ -2676,7 +3026,9 @@ def _process_floor(
     # Ensure boolean values are properly converted (avoid numpy array boolean ambiguity)
     exterior_wall_polys = [poly_m for _wall, poly_m, is_ext, _thickness in wall_records if bool(is_ext)]
     if not exterior_wall_polys:
-        return
+        exterior_wall_polys = [poly_m for _wall, poly_m, _is_ext, _thickness in wall_records]
+        if not exterior_wall_polys:
+            return
     
     try:
         # Create outer boundary: union of external walls, buffer by wall thickness, then envelope
@@ -2686,8 +3038,10 @@ def _process_floor(
             union_poly = exterior_wall_polys[0]
         
         # Get average wall thickness for buffer
-        # Ensure boolean values are properly converted (avoid numpy array boolean ambiguity)
-        avg_thickness_mm = sum(thickness for _w, _g, _e, thickness in wall_records if bool(_e)) / max(len([w for w in wall_records if bool(w[2])]), 1)
+        # Prefer external walls when available; otherwise, use all walls
+        ext_records = [r for r in wall_records if bool(r[2])]
+        used_records = ext_records if ext_records else list(wall_records)
+        avg_thickness_mm = sum(r[3] for r in used_records) / max(len(used_records), 1)
         buffer_distance_m = (avg_thickness_mm * IFCConstants.BUFFER_FACTOR) / 1000.0
         
         # Buffer and get envelope
@@ -2697,8 +3051,13 @@ def _process_floor(
         else:
             floor_poly = buffered
         
-        # Convert to points
+        # Convert to points (enforce orientation, simplify micro edges ~5mm)
         if not floor_poly.is_empty and floor_poly.is_valid:
+            try:
+                floor_poly = orient(floor_poly, sign=-1.0)
+                floor_poly = floor_poly.simplify(0.005, preserve_topology=True)
+            except Exception:
+                pass
             floor_coords = list(floor_poly.exterior.coords)[:-1]
             if len(floor_coords) >= 3:
                 builder.create_slab(
@@ -2714,71 +3073,6 @@ def _process_floor(
         logger.warning("Failed to create outer boundary floor: %s", floor_exc)
 
 
-def _rect_dimensions(poly: Polygon) -> Tuple[float, float, Tuple[float, float]]:
-    rect = poly.minimum_rotated_rectangle
-    coords = list(rect.exterior.coords)
-    if len(coords) < 4:
-        minx, miny, maxx, maxy = poly.bounds
-        width = maxx - minx
-        depth = maxy - miny
-        return width, depth, (minx, miny)
-    coords = coords[:-1]
-    edges = [math.hypot(coords[i][0] - coords[(i + 1) % 4][0], coords[i][1] - coords[(i + 1) % 4][1]) for i in range(4)]
-    length = max(edges)
-    depth = min(edges)
-    minx = min(pt[0] for pt in coords)
-    miny = min(pt[1] for pt in coords)
-    return length, depth, (minx, miny)
-
-
-def _validate_before_export(
-    normalized: Sequence[NormalizedDet],
-    spaces: Sequence[SpacePoly],
-) -> None:
-    """
-    Validate inputs before IFC export.
-    
-    This function is designed to be non-blocking - it logs warnings
-    but never raises exceptions to prevent server crashes.
-    
-    Args:
-        normalized: Sequence of normalized detections
-        spaces: Sequence of space polygons
-    """
-    try:
-        is_valid, warnings = validate_before_export(normalized, spaces)
-        if warnings:
-            warning_msg = "; ".join(warnings[:10])  # Limit to first 10 warnings
-            logger.warning(f"Pre-export validation warnings: {warning_msg}")
-        # Never raise exception - always allow export to proceed
-    except Exception as e:
-        # Catch-all to prevent crashes
-        logger.error(f"Error in pre-export validation (non-critical): {e}", exc_info=True)
-        # Continue with export anyway
-
-
-def _validate_after_export(out_path: Path) -> None:
-    """
-    Validate IFC file after export.
-    
-    This function is designed to be non-blocking - it logs warnings
-    but never raises exceptions to prevent server crashes.
-    
-    Args:
-        out_path: Path to exported IFC file
-    """
-    try:
-        is_valid, warnings = validate_ifc_file(str(out_path))
-        if warnings:
-            warning_msg = "; ".join(warnings[:10])  # Limit to first 10 warnings
-            logger.warning(f"Post-export validation warnings: {warning_msg}")
-        # Never raise exception - file was already written successfully
-    except Exception as e:
-        # Catch-all to prevent crashes
-        logger.error(f"Error in post-export validation (non-critical): {e}", exc_info=True)
-        # Continue - file was already written
-
-
 def _write_ifc_v2_impl(
     normalized: Sequence[NormalizedDet],
     spaces: Sequence[SpacePoly],
@@ -2789,15 +3083,13 @@ def _write_ifc_v2_impl(
     window_height_mm: float,
     floor_thickness_mm: float = STANDARDS["SLAB_THICKNESS"] * 1000.0,  # Convert m to mm
     px_per_mm: float | None = None,
+    image_height_px: float | None = None,
     wall_axes: Sequence[Any] | None = None,
     geometry_fidelity: str | None = None,
     gap_closure_mode: str | None = None,
     config: IFCExportConfig | None = None,
 ) -> Path:
     """Internal implementation of IFC export (runs in subprocess to avoid memory leaks)."""
-    # Pre-export validation
-    _validate_before_export(normalized, spaces)
-    
     # Create config from parameters if not provided
     if config is None:
         config = IFCExportConfig(
@@ -2807,13 +3099,35 @@ def _write_ifc_v2_impl(
         )
     else:
         # Override config with explicit parameters if provided (for backward compatibility)
-        if geometry_fidelity is not None:
+        if geometry_fidelity:
             config.geometry_fidelity = geometry_fidelity
-        if gap_closure_mode is not None:
+        if gap_closure_mode:
             config.gap_closure_mode = gap_closure_mode
     
+    # Derive image height in meters for Y-axis flipping (if possible)
+    image_height_m: float | None = None
+    if image_height_px is not None:
+        try:
+            px_value = float(image_height_px)
+            if px_per_mm:
+                px_per_mm_val = float(px_per_mm)
+                if px_per_mm_val > 0.0:
+                    image_height_m = px_value / px_per_mm_val / 1000.0
+        except (TypeError, ValueError):
+            logger.debug("Invalid image_height_px value: %s", image_height_px)
+
+    if image_height_m is None and config is not None:
+        cfg_height = getattr(config, "image_height", None)
+        if cfg_height is not None:
+            try:
+                image_height_m = float(cfg_height)
+            except (TypeError, ValueError):
+                logger.debug("Invalid config.image_height value: %s", cfg_height)
+
     try:
         with IFCV2Builder(config=config) as builder:
+            builder.default_image_height = image_height_m
+            builder.image_height = image_height_m
             # Use provided wall axes or calculate new ones (with error handling)
             if wall_axes is None:
                 try:
@@ -2882,6 +3196,9 @@ def _write_ifc_v2_impl(
             except Exception as e:
                 logger.warning(f"Error adding provenance (non-critical): {e}")
 
+            # Validate before writing file
+            builder._validate_before_export()
+
             try:
                 builder.finalize_relations()
             except Exception as e:
@@ -2894,10 +3211,10 @@ def _write_ifc_v2_impl(
             except Exception as e:
                 logger.error(f"Error writing IFC file: {e}", exc_info=True)
                 raise IFCExportError(f"Failed to write IFC file: {e}") from e
-            
+
             # Post-export validation (non-blocking)
-            _validate_after_export(out_path)
-            
+            builder._validate_after_export()
+
             # Validate IFC schema after writing (non-blocking)
             try:
                 validate_ifc_schema(out_path)

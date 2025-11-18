@@ -37,8 +37,16 @@ from core.ml.postprocess_floorplan import (
 from core.ml.roboflow_client import RFPred, RoboflowPrediction
 from core.ml.pipeline_config import PipelineConfig, GapClosureMode
 from core.ml.postprocess_v2 import process_roboflow_predictions_v2
-from core.reconstruct.spaces import polygonize_spaces_from_walls
+from core.reconstruct.spaces import polygonize_spaces_from_walls, SpaceConfig
+from core.reconstruct.walls import (
+    repair_wall_detections,
+    collapse_wall_nodes,
+    resolve_t_junctions,
+    merge_overlapping_walls,
+)
+from core.reconstruct.spaces_graph import polygonize_spaces_graph
 from core.ifc.build_ifc43_model_v2 import write_ifc_v2
+from core.validate.fallback_generation import ensure_minimum_geometry
 from core.ifc.viewer_v2 import generate_predictions_viewer_html
 from core.settings import get_settings
 from core.vector.ifc_topview import build_topview_geojson
@@ -388,9 +396,72 @@ async def run_ifc_export_v2(
     if not normalized:
         raise GeometryError("Keine gültigen Geometrien für den IFC-Export gefunden (nach Post-Processing)")
 
+    # Step 5.2: Wall Graph Repair (snap, prune, merge, orient, rectangle fallback)
+    try:
+        normalized = list(repair_wall_detections(
+            list(normalized),
+            snap_endpoints_mm=8.0,
+            min_segment_len_mm=400.0,
+            min_area_mm2=max(200_000.0, float(getattr(config, "min_room_area_m2", 1.0)) * 200_000.0),
+            angle_tol_deg=float(getattr(config, "angle_tolerance", 5.0)),
+        ))
+    except Exception as repair_exc:
+        logger.warning("Wall graph repair failed (continuing with original): %s", repair_exc)
+
+    # Step 5.3: Node Collapse (merge nearby endpoints) on polygons
+    try:
+        normalized = list(collapse_wall_nodes(list(normalized)))
+    except Exception as exc:
+        logger.warning("Node collapse failed (non-critical): %s", exc)
+
+    # Step 5.4: T-Junction Resolver and Overlap Merge (polygons)
+    try:
+        normalized = list(resolve_t_junctions(list(normalized)))
+    except Exception as exc:
+        logger.warning("T-junction resolve failed (non-critical): %s", exc)
+    try:
+        normalized = list(merge_overlapping_walls(list(normalized)))
+    except Exception as exc:
+        logger.warning("Overlap merge failed (non-critical): %s", exc)
+
     # Step 5.5: Reconstruction
     t_reconstruction_start = time.perf_counter()
-    spaces = polygonize_spaces_from_walls(normalized)
+    # Deterministic spaces (graph-like wrapper), then fallback to Two-Pass heuristics
+    spaces = []
+    try:
+        spaces = polygonize_spaces_graph(normalized, config=None)
+    except Exception as exc:
+        logger.warning("Deterministic space polygonization failed (will use Two-Pass): %s", exc)
+    # Use pipeline config thresholds for space extraction; retry with permissive fallback if needed
+    try:
+        base_space_cfg = SpaceConfig(
+            min_room_area_m2=float(getattr(config, "min_room_area_m2", 1.0)),
+            gap_threshold_mm=float(getattr(config, "max_gap_close", 50.0)),
+            gap_buffer_mm=25.0,
+            min_space_area_mm2=max(10000.0, float(getattr(config, "min_room_area_m2", 1.0)) * 1_000_000.0),
+            treat_open_areas_as_rooms=False,
+        )
+    except Exception:
+        base_space_cfg = SpaceConfig()
+    if not spaces:
+        spaces = polygonize_spaces_from_walls(normalized, config=base_space_cfg)
+    if not spaces:
+        fallback_space_cfg = SpaceConfig(
+            min_room_area_m2=min(0.5, float(getattr(config, "min_room_area_m2", 1.0))),
+            gap_threshold_mm=100.0,
+            gap_buffer_mm=50.0,
+            min_space_area_mm2=10000.0,
+            treat_open_areas_as_rooms=True,
+        )
+        spaces = polygonize_spaces_from_walls(normalized, config=fallback_space_cfg)
+    # Step 5.6: Validation Fallback (Never-Abort): ensure at least one wall and one space
+    try:
+        doc = int(getattr(normalized[0], "doc", 0)) if normalized else 0
+        page = int(getattr(normalized[0], "page", 0)) if normalized else 0
+    except Exception:
+        doc = 0
+        page = 0
+    normalized, spaces, fb_notes = ensure_minimum_geometry(normalized, spaces, doc=doc, page=page)
     
     # Only compute wall axes if not preserving exact geometry (saves CPU time)
     if not config.preserve_exact_geometry:
@@ -495,7 +566,8 @@ async def run_ifc_export_v2(
                 window_height_mm=window_height_mm,
                 floor_thickness_mm=payload.floor_thickness_mm,
                 px_per_mm=px_per_mm,
-                wall_axes=repaired_wall_axes,  # Use repaired axes if available
+                # Let builder compute axes if preserve_exact_geometry=True (for robust axis rep)
+                wall_axes=(repaired_wall_axes if not config_for_export.preserve_exact_geometry else None),
                 config=export_config,
             )
 
