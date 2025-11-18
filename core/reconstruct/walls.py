@@ -8,7 +8,320 @@ from typing import Dict, List, Mapping, Sequence, Set, Tuple
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon
 from shapely.ops import unary_union
 
+from core.geometry.contract import (
+    SNAP_ENDPOINTS_MM,
+    MIN_SEGMENT_LEN_MM,
+    MIN_POLYGON_AREA,
+    SEGMENT_MERGE_ANGLE_DEG,
+)
+
+
 logger = logging.getLogger(__name__)
+
+
+def _cluster_points(points: List[Tuple[float, float]], tol: float) -> List[Tuple[float, float]]:
+    if not points:
+        return []
+    clusters: List[Tuple[float, float, int]] = []  # (cx, cy, count)
+    for x, y in points:
+        assigned = -1
+        for i, (cx, cy, cnt) in enumerate(clusters):
+            if math.hypot(x - cx, y - cy) <= tol:
+                assigned = i
+                break
+        if assigned == -1:
+            clusters.append((x, y, 1))
+        else:
+            cx, cy, cnt = clusters[assigned]
+            cnt2 = cnt + 1
+            clusters[assigned] = (cx + (x - cx) / cnt2, cy + (y - cy) / cnt2, cnt2)
+    return [(cx, cy) for (cx, cy, _cnt) in clusters]
+
+
+def collapse_wall_nodes(
+    normalized: List,
+    *,
+    tol_mm: float = SNAP_ENDPOINTS_MM,
+) -> List:
+    """Merge nearby exterior vertices of wall polygons to shared cluster centers."""
+    from shapely.geometry import Polygon as _Polygon, MultiPolygon as _MultiPolygon
+    # Collect unique clusters across all exterior vertices
+    all_pts: List[Tuple[float, float]] = []
+    for det in normalized:
+        if getattr(det, "type", "").upper() != "WALL":
+            continue
+        geom = getattr(det, "geom", None)
+        if isinstance(geom, _Polygon):
+            coords = list(geom.exterior.coords)[:-1]
+            all_pts.extend(coords)
+        elif isinstance(geom, _MultiPolygon):
+            for part in geom.geoms:
+                if isinstance(part, _Polygon):
+                    coords = list(part.exterior.coords)[:-1]
+                    all_pts.extend(coords)
+    centers = _cluster_points(all_pts, tol_mm)
+
+    def _snap_ring(coords: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        out: List[Tuple[float, float]] = []
+        for (x, y) in coords:
+            best = (x, y)
+            best_d = float("inf")
+            for (cx, cy) in centers:
+                d = math.hypot(x - cx, y - cy)
+                if d < best_d and d <= tol_mm:
+                    best_d = d
+                    best = (cx, cy)
+            out.append(best)
+        if out and out[0] != out[-1]:
+            out.append(out[0])
+        return out
+
+    repaired: List = []
+    for det in normalized:
+        try:
+            if getattr(det, "type", "").upper() != "WALL":
+                repaired.append(det)
+                continue
+            geom = getattr(det, "geom", None)
+            if not isinstance(geom, _Polygon):
+                repaired.append(det)
+                continue
+            ring = list(geom.exterior.coords)
+            ring = _snap_ring(ring)
+            poly = _Polygon(ring)
+            if not poly.is_valid:
+                try:
+                    poly = poly.buffer(0)
+                except Exception:
+                    pass
+            setattr(det, "geom", poly)
+            repaired.append(det)
+        except Exception:
+            repaired.append(det)
+    return repaired
+
+
+def _project_point_to_segment(px: float, py: float, a: Tuple[float, float], b: Tuple[float, float]) -> Tuple[float, float, float]:
+    ax, ay = a
+    bx, by = b
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    if L2 <= 1e-9:
+        return ax, ay, 0.0
+    t = ((px - ax) * dx + (py - ay) * dy) / L2
+    t_clamped = max(0.0, min(1.0, t))
+    qx = ax + t_clamped * dx
+    qy = ay + t_clamped * dy
+    return qx, qy, t_clamped
+
+
+def resolve_t_junctions(
+    normalized: List,
+    *,
+    tol_mm: float = SNAP_ENDPOINTS_MM,
+    endpoint_margin_ratio: float = 0.15,
+) -> List:
+    """Insert connector nodes where a vertex projects into the middle of another wall edge."""
+    from shapely.geometry import Polygon as _Polygon
+    walls = [det for det in normalized if getattr(det, "type", "").upper() == "WALL" and isinstance(getattr(det, "geom", None), _Polygon)]
+    for i, det_i in enumerate(walls):
+        poly_i: _Polygon = det_i.geom
+        vcoords = list(poly_i.exterior.coords)[:-1]
+        for vx, vy in vcoords:
+            for j, det_j in enumerate(walls):
+                if i == j:
+                    continue
+                poly_j: _Polygon = det_j.geom
+                coords = list(poly_j.exterior.coords)
+                modified = False
+                for k in range(len(coords) - 1):
+                    p0 = coords[k]
+                    p1 = coords[k + 1]
+                    qx, qy, t = _project_point_to_segment(vx, vy, p0, p1)
+                    d = math.hypot(vx - qx, vy - qy)
+                    if d <= tol_mm and endpoint_margin_ratio < t < (1.0 - endpoint_margin_ratio):
+                        # insert projected point between k and k+1
+                        coords.insert(k + 1, (qx, qy))
+                        modified = True
+                        break
+                if modified:
+                    # Rebuild polygon and repair
+                    try:
+                        if coords[0] != coords[-1]:
+                            coords.append(coords[0])
+                        new_poly = _Polygon(coords)
+                        if not new_poly.is_valid:
+                            new_poly = new_poly.buffer(0)
+                        det_j.geom = new_poly
+                    except Exception:
+                        pass
+    return normalized
+
+
+def merge_overlapping_walls(
+    normalized: List,
+    *,
+    iou_threshold: float = 0.7,
+    cover_threshold: float = 0.85,
+) -> List:
+    """Remove duplicate parallel/overlapped walls based on area overlap coverage.
+
+    Keep the larger polygon when two wall polygons substantially overlap each other.
+    """
+    from shapely.geometry import Polygon as _Polygon
+    walls = [(idx, det, det.geom) for idx, det in enumerate(normalized) if getattr(det, "type", "").upper() == "WALL" and isinstance(getattr(det, "geom", None), _Polygon)]
+    to_drop: set[int] = set()
+    for a_idx, a_det, a_poly in walls:
+        if a_idx in to_drop:
+            continue
+        for b_idx, b_det, b_poly in walls:
+            if b_idx <= a_idx or b_idx in to_drop:
+                continue
+            try:
+                inter = a_poly.intersection(b_poly)
+                if inter.is_empty:
+                    continue
+                inter_area = float(inter.area)
+                a_area = float(a_poly.area) or 1.0
+                b_area = float(b_poly.area) or 1.0
+                iou = inter_area / (a_area + b_area - inter_area)
+                cov_a = inter_area / a_area
+                cov_b = inter_area / b_area
+                if iou >= iou_threshold or (cov_a >= cover_threshold and cov_b >= cover_threshold * 0.8):
+                    # Drop the smaller
+                    drop_idx = a_idx if a_area < b_area else b_idx
+                    to_drop.add(drop_idx)
+            except Exception:
+                continue
+    if not to_drop:
+        return normalized
+    return [det for idx, det in enumerate(normalized) if idx not in to_drop]
+
+def _enforce_clockwise(poly: Polygon) -> Polygon:
+    try:
+        from shapely.geometry.polygon import orient
+        return orient(poly, sign=-1.0)  # Clockwise
+    except Exception:
+        return poly
+
+
+def _remove_short_segments(coords: list[tuple[float, float]], min_len_mm: float) -> list[tuple[float, float]]:
+    if not coords:
+        return coords
+    result: list[tuple[float, float]] = []
+    for pt in coords:
+        if not result:
+            result.append(pt)
+            continue
+        px, py = result[-1]
+        dx = pt[0] - px
+        dy = pt[1] - py
+        if (dx * dx + dy * dy) ** 0.5 >= min_len_mm:
+            result.append(pt)
+    # Ensure closed ring
+    if result and (result[0][0] != result[-1][0] or result[0][1] != result[-1][1]):
+        result.append(result[0])
+    return result
+
+
+def _merge_colinear(coords: list[tuple[float, float]], angle_tol_deg: float = 5.0) -> list[tuple[float, float]]:
+    if len(coords) < 4:
+        return coords
+    def angle(p0, p1, p2):
+        v1 = (p1[0] - p0[0], p1[1] - p0[1])
+        v2 = (p2[0] - p1[0], p2[1] - p1[1])
+        l1 = math.hypot(*v1) or 1.0
+        l2 = math.hypot(*v2) or 1.0
+        dot = (v1[0] * v2[0] + v1[1] * v2[1]) / (l1 * l2)
+        dot = max(-1.0, min(1.0, dot))
+        return math.degrees(math.acos(dot))
+    res = [coords[0]]
+    for i in range(1, len(coords) - 1):
+        a = angle(res[-1], coords[i], coords[i + 1])
+        if abs(180.0 - a) <= angle_tol_deg:
+            # Skip nearly colinear middle vertex
+            continue
+        res.append(coords[i])
+    res.append(coords[-1])
+    return res
+
+
+def _round_to_grid(coords: list[tuple[float, float]], snap_mm: float) -> list[tuple[float, float]]:
+    if snap_mm <= 0:
+        return coords
+    def rnd(v: float) -> float:
+        return round(v / snap_mm) * snap_mm
+    out = [(rnd(x), rnd(y)) for (x, y) in coords]
+    # Ensure closure
+    if out and (out[0][0] != out[-1][0] or out[0][1] != out[-1][1]):
+        out.append(out[0])
+    return out
+
+
+def repair_wall_detections(
+    normalized: list,
+    *,
+    snap_endpoints_mm: float = SNAP_ENDPOINTS_MM,
+    min_segment_len_mm: float = MIN_SEGMENT_LEN_MM,
+    min_area_mm2: float = MIN_POLYGON_AREA * 1_000_000.0,
+    angle_tol_deg: float = SEGMENT_MERGE_ANGLE_DEG,
+) -> list:
+    """Repair wall polygons in-place and return the list.
+
+    Steps:
+    - Snap vertices to grid (snap_endpoints_mm)
+    - Remove short segments (< min_segment_len_mm)
+    - Merge nearly-colinear vertices (angle within angle_tol_deg of 180°)
+    - Enforce clockwise orientation
+    - If invalid/too small/<3 points, replace with minimum rotated rectangle
+    """
+    from shapely.geometry import Polygon as _Polygon
+    repaired = []
+    for det in normalized:
+        try:
+            det_type = getattr(det, "type", "") or getattr(det, "klass", "")
+            if str(det_type).upper() != "WALL":
+                repaired.append(det)
+                continue
+            geom = getattr(det, "geom", None)
+            if not isinstance(geom, _Polygon) or geom.is_empty:
+                repaired.append(det)
+                continue
+            poly: _Polygon = geom
+            if not poly.is_valid:
+                try:
+                    poly = poly.buffer(0)
+                except Exception:
+                    pass
+            coords = list(poly.exterior.coords)
+            coords = _round_to_grid(coords, snap_endpoints_mm)
+            coords = _remove_short_segments(coords, min_segment_len_mm)
+            coords = _merge_colinear(coords, angle_tol_deg)
+            if len(coords) < 4:
+                rect = poly.minimum_rotated_rectangle
+                if isinstance(rect, _Polygon) and not rect.is_empty:
+                    poly = rect
+                else:
+                    repaired.append(det)
+                    continue
+            else:
+                poly = _Polygon(coords)
+            if (not poly.is_valid) or poly.area < min_area_mm2:
+                rect = poly.minimum_rotated_rectangle
+                if isinstance(rect, _Polygon) and not rect.is_empty:
+                    poly = rect
+            poly = _enforce_clockwise(poly)
+            try:
+                setattr(det, "geom", poly)
+            except Exception:
+                # If det is immutable (pydantic), attempt to rebuild dict
+                if hasattr(det, "model_copy"):
+                    new_det = det.model_copy(update={"geom": poly})
+                    det = new_det
+            repaired.append(det)
+        except Exception:
+            repaired.append(det)
+    return repaired
 
 
 def rebuffer_walls(

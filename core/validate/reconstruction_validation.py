@@ -503,8 +503,9 @@ def validate_before_ifc_export(
     # Check 2b: Wall axes count (ENHANCED)
     axis_count = len([ax for ax in wall_axes if ax.axis and ax.axis.length >= 1e-3])
     if axis_count == 0 and wall_count > 0:
-        action_items["critical"].append("No valid wall axes extracted - IFC model will be incomplete")
-        warnings.append("No valid wall axes extracted - IFC model will be incomplete")
+        if not (config and getattr(config, "preserve_exact_geometry", False)):
+            action_items["critical"].append("No valid wall axes extracted - IFC model will be incomplete")
+            warnings.append("No valid wall axes extracted - IFC model will be incomplete")
     elif axis_count < wall_count * 0.5:
         action_items["needs_attention"].append(f"Only {axis_count}/{wall_count} walls have valid axes - some walls may be missing")
         warnings.append(f"Only {axis_count}/{wall_count} walls have valid axes")

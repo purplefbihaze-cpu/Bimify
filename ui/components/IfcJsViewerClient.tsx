@@ -200,6 +200,27 @@ export default function IfcJsViewerClient({ ifcUrl, className = "", height = DEF
   const collectCategoryIds = async (manager: IFCLoader["ifcManager"], modelID: number) => {
     const ids = createEmptyCategoryIds();
 
+    const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const ready = await (async () => {
+      for (let i = 0; i < 6; i++) {
+        if (
+          manager &&
+          typeof manager.getAllItemsOfType === "function" &&
+          manager.ifcAPI &&
+          typeof (manager.ifcAPI as any)?.GetLineIDsWithType === "function"
+        ) {
+          return true;
+        }
+        await delay(50 * (i + 1));
+      }
+      return false;
+    })();
+
+    if (!ready) {
+      console.warn("[ifc-viewer] IFC manager is not ready; skipping category extraction");
+      return { categories: ids, others: [] };
+    }
+
     if (
       !manager ||
       typeof manager.getAllItemsOfType !== "function" ||
@@ -215,7 +236,7 @@ export default function IfcJsViewerClient({ ifcUrl, className = "", height = DEF
         const values = await manager.getAllItemsOfType(modelID, type, false);
         return sanitizeIds(values);
       } catch (error) {
-        console.warn(`[ifc-viewer] getAllItemsOfType failed for type ${type}`, error);
+        console.debug(`[ifc-viewer] getAllItemsOfType failed for type ${type}`, error);
         return [] as number[];
       }
     };
@@ -227,7 +248,7 @@ export default function IfcJsViewerClient({ ifcUrl, className = "", height = DEF
       try {
         return await manager.getItemProperties(modelID, elementID, true, true);
       } catch (error) {
-        console.warn(`[ifc-viewer] getItemProperties failed for id ${elementID}`, error);
+        console.debug(`[ifc-viewer] getItemProperties failed for id ${elementID}`, error);
         return null;
       }
     };
@@ -325,7 +346,7 @@ export default function IfcJsViewerClient({ ifcUrl, className = "", height = DEF
       ids[key].forEach((id) => seen.add(id));
     });
 
-    const allProducts = sanitizeIds(await manager.getAllItemsOfType(modelID, IFCPRODUCT, false));
+    const allProducts = await safeGetAllItems(IFCPRODUCT);
     const others = allProducts.filter((id) => !seen.has(id));
 
     return { categories: ids, others };
@@ -341,6 +362,8 @@ export default function IfcJsViewerClient({ ifcUrl, className = "", height = DEF
     if (!sceneRef.current) return;
 
     const availability = createCategoryState(false);
+
+    let createdSubsets = false;
 
     CATEGORY_KEYS.forEach((key) => {
       const ids = categories[key];
@@ -372,6 +395,7 @@ export default function IfcJsViewerClient({ ifcUrl, className = "", height = DEF
       subset.visible = visibility[key];
       subset.renderOrder = 2;
       subsetsRef.current[key] = subset;
+      createdSubsets = true;
     });
 
     setAvailableCategories(availability);
@@ -396,9 +420,10 @@ export default function IfcJsViewerClient({ ifcUrl, className = "", height = DEF
       subset.visible = true;
       subset.renderOrder = 1;
       othersSubsetRef.current = subset;
+      createdSubsets = true;
     }
 
-    model.visible = false;
+    model.visible = !createdSubsets;
   };
 
   useEffect(() => {
